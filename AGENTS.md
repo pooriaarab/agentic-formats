@@ -10,7 +10,7 @@ and never write zip or XML code.
 
 ## Faces
 
-- SDK: `import { normalizeTextDoc, readZip } from "agentic-formats"`.
+- SDK: `import { readOdt, writeOdt } from "agentic-formats"`. Each returns `{ model|bytes, warnings }`.
 - CLI: `npx agentic-formats --help`.
 - MCP: `npx agentic-formats mcp`.
 

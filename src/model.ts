@@ -109,6 +109,12 @@ function normalizeList(list: List): List {
   };
 }
 
+/** A cell with one empty paragraph is an empty cell. */
+function normalizeCell(cell: Block[]): Block[] {
+  const blocks = cell.map(normalizeBlock);
+  return blocks.length === 1 && blocks[0].type === "paragraph" && blocks[0].content.length === 0 ? [] : blocks;
+}
+
 export function normalizeBlock(block: Block): Block {
   switch (block.type) {
     case "heading":
@@ -117,7 +123,7 @@ export function normalizeBlock(block: Block): Block {
     case "list":
       return normalizeList(block);
     case "table":
-      return { type: "table", ...(block.header ? { header: true } : {}), rows: block.rows.map((row) => row.map((cell) => cell.map(normalizeBlock))) };
+      return { type: "table", ...(block.header ? { header: true } : {}), rows: block.rows.map((row) => row.map(normalizeCell)) };
   }
 }
 

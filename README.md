@@ -7,8 +7,8 @@
 
 Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.
 
-> Status: early. This release holds the neutral models and the input guards. The file
-> readers and writers land next, one format family per release. The package is not on npm yet.
+> Status: early. The neutral models, the input guards, and ODT work. The other formats land
+> next, one family per release. The package is not on npm yet.
 
 ## Install
 
@@ -26,13 +26,18 @@ npm install agentic-formats
   an entry that is too large, an unsafe entry name, a duplicate entry name, a DOCTYPE, an
   undefined entity, XML that nests too deep, and a part that is too large. Every reader will use
   them. Limits are in `DEFAULT_LIMITS`, and you can lower or raise each one.
+- **ODT.** `readOdt` and `writeOdt` handle headings, paragraphs with marks, links, nested lists,
+  tables with a header row, images, footnotes, and the document title. A round-trip test has
+  LibreOffice open, print, and re-save our file, and the re-saved file reads back to the same model.
+  Each reader and writer returns warnings that name what the format could not hold.
 - **Normalizing.** `normalizeTextDoc` merges equal runs, so you can compare two documents.
 
 ```ts
-import { readZip, parseXml, withLimits, FormatError } from "agentic-formats";
+import { readOdt, writeOdt, FormatError } from "agentic-formats";
 
 try {
-  const files = readZip(bytes, withLimits({ maxTotalBytes: 20_000_000 }), "docx", (n) => n.endsWith(".xml"));
+  const { model, warnings } = readOdt(bytes, { maxTotalBytes: 20_000_000 });
+  const { bytes: out } = writeOdt(model);
 } catch (error) {
   if (error instanceof FormatError) console.error(error.code, error.message);
 }
@@ -40,13 +45,16 @@ try {
 
 ## Planned
 
-- ODT and DOCX documents, ODS and XLSX spreadsheets, ODP and PPTX slide decks.
+- DOCX documents, ODS and XLSX spreadsheets, ODP and PPTX slide decks.
 - A CLI (`agentic-formats convert in.odt out.docx`) and MCP tools.
 - Round-trip tests against LibreOffice output.
 
 ## Limits
 
-- No format has a reader or a writer yet.
+- ODT has no support for merged cells, comments, tracked changes, text boxes, or styles beyond the
+  marks in the model. A reader lists each one it skips in `warnings`.
+- A list item holds one paragraph and an optional sublist. Extra paragraphs join with line breaks.
+- Images are PNG, JPEG, or GIF, found by their first bytes. A remote image is never loaded.
 - Lengths in the models are in points. Every reader reads UTF-8 XML only.
 - A file is never partly read. A file that goes past a limit is rejected.
 
@@ -56,6 +64,9 @@ try {
 npm ci
 npm run ci:local
 ```
+
+The round-trip tests need LibreOffice (`soffice` on the path). Set `REQUIRE_LIBREOFFICE=1` to fail
+when it is missing. Without it, those tests skip. A run writes `artifacts/odt-roundtrip.json`.
 
 ## License
 

@@ -36,3 +36,5 @@ export { isSafeEntryName, readZip, writeZip } from "./zip.js";
 export type { ZipEntry } from "./zip.js";
 export { childOf, elementsOf, parseXml, safeHref, textOf, xmlEscape } from "./xml.js";
 export type { Namespaces, XmlElement } from "./xml.js";
+export { ODT_MIME, readOdt, writeOdt } from "./odt.js";
+export { frameSize, lengthPt, sniffImage } from "./image.js";

@@ -10,9 +10,10 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 ## Use the SDK
 
 ```js
-import { normalizeTextDoc } from "agentic-formats";
+import { readOdt, writeOdt } from "agentic-formats";
 
-const doc = normalizeTextDoc({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }] });
+const { bytes } = writeOdt({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }] });
+const { model, warnings } = readOdt(bytes);
 ```
 
 ## Use the CLI and MCP server
