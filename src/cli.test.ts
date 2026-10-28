@@ -1,91 +1,35 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, test } from "vitest";
-import { parseArgs, runCli, UsageError, type CliIo } from "./cli.js";
-import { LocalRouterAdapter } from "./core.js";
+import worker from "./worker.js";
 
-function testIo(overrides: Partial<CliIo> = {}): CliIo & { outLines: string[]; errLines: string[] } {
-  const outLines: string[] = [];
-  const errLines: string[] = [];
-  return {
-    outLines,
-    errLines,
-    out: (line) => outLines.push(line),
-    err: (line) => errLines.push(line),
-    readFile: (path) => `file:${path}`,
-    router: new LocalRouterAdapter(),
-    ...overrides,
-  };
-}
+const cli = new URL("../dist/cli.js", import.meta.url).pathname;
+const version = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
-describe("parseArgs", () => {
-  test("empty args print help", () => {
-    expect(parseArgs([]).command).toBe("help");
+describe("built package", () => {
+  test("the CLI prints its version and help, and rejects an unknown command", () => {
+    expect(spawnSync("node", [cli, "--version"], { encoding: "utf8" }).stdout.trim()).toBe(version);
+    expect(spawnSync("node", [cli, "--help"], { encoding: "utf8" }).stdout).toContain("agentic-formats");
+    const bad = spawnSync("node", [cli, "summary"], { encoding: "utf8" });
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toContain('unknown command "summary"');
   });
 
-  test("--version selects version", () => {
-    expect(parseArgs(["--version"]).command).toBe("version");
+  test("the MCP server starts over stdio", async () => {
+    const client = new Client({ name: "probe", version: "0.0.0" });
+    await client.connect(new StdioClientTransport({ command: "node", args: [cli, "mcp"] }));
+    try {
+      expect(client.getServerVersion()).toMatchObject({ name: "agentic-formats", version });
+    } finally {
+      await client.close();
+    }
   });
 
-  test("summary takes text and top", () => {
-    expect(parseArgs(["summary", "--text", "hi", "--top", "2"])).toEqual({
-      command: "summary",
-      text: "hi",
-      topN: 2,
-      dryRun: false,
-    });
-  });
-
-  test("dispatch takes dry run", () => {
-    const request = parseArgs(["dispatch", "--text", "hi", "--dry-run"]);
-    expect(request.command).toBe("dispatch");
-    expect(request.dryRun).toBe(true);
-  });
-
-  test("unknown command throws UsageError", () => {
-    expect(() => parseArgs(["frobnicate"])).toThrow(UsageError);
-  });
-
-  test("summary without input throws", () => {
-    expect(() => parseArgs(["summary"])).toThrow(/needs --text or --file/);
-  });
-
-  test("bad top value throws", () => {
-    expect(() => parseArgs(["summary", "--text", "hi", "--top", "many"])).toThrow(/--top/);
-  });
-});
-
-describe("runCli", () => {
-  test("summary prints JSON stats", async () => {
-    const io = testIo();
-    const code = await runCli(["summary", "--text", "hello world hello"], io);
-    expect(code).toBe(0);
-    expect(JSON.parse(io.outLines[0])).toMatchObject({ words: 3 });
-  });
-
-  test("summary reads a file when asked", async () => {
-    const io = testIo();
-    const code = await runCli(["summary", "--file", "note.txt"], io);
-    expect(code).toBe(0);
-    expect(JSON.parse(io.outLines[0])).toMatchObject({ words: 1 });
-  });
-
-  test("dispatch dry run prints a preview", async () => {
-    const io = testIo();
-    const code = await runCli(["dispatch", "--text", "hi", "--dry-run"], io);
-    expect(code).toBe(0);
-    expect(JSON.parse(io.outLines[0])).toMatchObject({ dryRun: true, chars: 2 });
-  });
-
-  test("bad usage exits 2", async () => {
-    const io = testIo();
-    const code = await runCli(["bogus"], io);
-    expect(code).toBe(2);
-    expect(io.errLines.length).toBeGreaterThan(0);
-  });
-
-  test("version prints a version string", async () => {
-    const io = testIo();
-    const code = await runCli(["--version"], io);
-    expect(code).toBe(0);
-    expect(io.outLines[0]).toMatch(/^\d+\.\d+\.\d+$/);
+  test("the worker answers /health and refuses the scaffold routes", async () => {
+    const health = await worker.fetch(new Request("https://x.test/health"), {});
+    expect(await health.json()).toMatchObject({ ok: true, pack: "agentic-formats", version });
+    expect((await worker.fetch(new Request("https://x.test/summarize", { method: "POST" }), {})).status).toBe(404);
   });
 });
