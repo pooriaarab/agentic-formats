@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agentic-formats": {
+      "command": "npx",
+      "args": ["-y", "agentic-formats", "mcp"]
+    }
+  }
+}
