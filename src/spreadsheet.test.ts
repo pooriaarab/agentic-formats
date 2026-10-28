@@ -1,0 +1,317 @@
+/*
+ * ODS and XLSX, end to end: the real writers, the real readers, an independent XML parser, and
+ * LibreOffice. The ways it can fail are written first; each has a case below.
+ *
+ *  1 a value is lost or changed: markup characters, edge spaces, newlines, text that looks like a
+ *    number or a formula, negatives, booleans, a float with full precision
+ *  2 a formula is mangled: separators, absolute refs, a sheet name with a space or a quote, a
+ *    function name with digits, a string literal that holds refs, commas, or semicolons
+ *  3 a number format is lost or wrong, or a date moves
+ *  4 a cell lands in the wrong place: far cells, gaps, row order
+ *  5 sheets: order, odd names, an empty sheet
+ *  6 the package is malformed: a part does not parse, `mimetype` is not first and stored, a
+ *    part is missing from the content types, a relationship points nowhere
+ *  7 the same model gives different bytes
+ *  8 a writer takes a model it cannot write: no sheets, bad names, bad refs, numbers that are not
+ *    finite, too many cells; a format ODS cannot hold goes unreported
+ *  9 a hostile file is read: a DOCTYPE, the wrong type, a huge repeat count, a cell off the grid,
+ *    a shared string index past the table, a missing relationship, too many cells
+ * 10 LibreOffice cannot open our file, or its re-save does not read back to the same model, in the
+ *    same format or after a trip through the other format; LibreOffice does not compute a formula
+ *    we wrote without a cached result
+ */
+import { isDeepStrictEqual } from "node:util";
+import { DOMParser } from "@xmldom/xmldom";
+import { strFromU8, unzipSync } from "fflate";
+import { afterAll, describe, expect, test } from "vitest";
+import { fromOpenFormula, toOpenFormula } from "./formula.js";
+import { FormatError, withLimits } from "./limits.js";
+import type { Workbook } from "./model.js";
+import { readOds, writeOds } from "./ods.js";
+import { isoToSerial, serialToIso } from "./spreadsheet.js";
+import { LibreOffice, hasLibreOffice, libreOfficeRequired, sha256, writeArtifact, type RoundTripRecord } from "./testing/libreoffice.js";
+import { readXlsx, writeXlsx } from "./xlsx.js";
+import { writeZip } from "./zip.js";
+
+const fixture: Workbook = {
+  sheets: [
+    {
+      name: "Sales Q1",
+      cells: {
+        A1: { value: "Item" },
+        B1: { value: "Qty" },
+        C1: { value: "Price" },
+        D1: { value: "Total" },
+        A2: { value: "Apples & <pears> \"q\" 'a'" },
+        B2: { value: 3 },
+        C2: { value: 1.25, format: "0.00" },
+        D2: { value: 3.75, formula: "B2*C2", format: "#,##0.00" },
+        E2: { value: 45000, format: "yyyy-mm-dd" },
+        F2: { value: "hello-x", formula: "'Other Sheet'!A1&\"-x\"" },
+        G2: { value: 0.48, formula: "ROUND(LOG10($B$2),2)" },
+        A3: { value: "  padded  text  " },
+        B3: { value: -7 },
+        C3: { value: 2.5 },
+        D3: { value: -17.5, formula: "B3*C3" },
+        E3: { value: 0.125, format: "0.00%" },
+        F3: { value: 5, formula: "'O''Brien'!A1+1" },
+        A4: { value: "multi\nline ünï ✓" },
+        B4: { value: true },
+        C4: { value: 0.25, format: "0%" },
+        D4: { value: "yes", formula: 'IF(B4,"yes","no")' },
+        E4: { value: "A1,B2;Apples & <pears> \"q\" 'a'", formula: 'CONCATENATE("A1,B2;",A2)' },
+        A5: { value: "Total" },
+        D5: { value: -13.75, formula: "SUM(D2:D3)" },
+        A6: { value: "007" },
+        B6: { value: "=SUM(1,2)" },
+        C6: { value: "TRUE" },
+        H1: { value: 42, format: "0" },
+        H2: { value: 1234567, format: "#,##0" },
+        H3: { value: 0.1234, format: "0.00" },
+        Z100: { value: "far" },
+      },
+    },
+    { name: "Other Sheet", cells: { A1: { value: "hello" }, B2: { value: 2 } } },
+    { name: "O'Brien", cells: { A1: { value: 4, formula: "'Other Sheet'!B2*2" } } },
+    { name: "Empty", cells: {} },
+  ],
+};
+
+const writers = { ods: writeOds, xlsx: writeXlsx } as const;
+const readers = { ods: readOds, xlsx: readXlsx } as const;
+const formats = ["ods", "xlsx"] as const;
+
+const wellFormed = (xml: string): void => {
+  const seen: string[] = [];
+  new DOMParser({ onError: (level, message) => seen.push(`${level}: ${message}`) }).parseFromString(xml, "text/xml");
+  expect(seen).toEqual([]);
+};
+const patch = (bytes: Uint8Array, name: string, change: (xml: string) => string): Uint8Array => {
+  const files = unzipSync(bytes);
+  const entries = Object.entries(files).map(([n, data]) => ({ name: n, data: n === name ? change(strFromU8(data)) : data, store: n === "mimetype" }));
+  return writeZip(entries, withLimits());
+};
+const sheet = (name: string, cells: Workbook["sheets"][0]["cells"]): Workbook => ({ sheets: [{ name, cells }] });
+
+describe.each(formats)("%s: write then read", (format) => {
+  const write = writers[format];
+  const read = readers[format];
+
+  test("1-5 the workbook reads back unchanged, with no warnings", () => {
+    const written = write(fixture);
+    const back = read(written.bytes);
+    expect(back.model).toEqual(fixture);
+    expect(back.warnings).toEqual([]);
+    expect(written.warnings).toEqual([]);
+  });
+
+  test("1 a float with full precision, edge spaces, and an empty string survive", () => {
+    const book = sheet("S", { A1: { value: 0.1 + 0.2 }, A2: { value: " x " }, A3: { value: "" }, A4: { value: 1e-7 }, A5: { value: 123456789012345680000 }, A6: { value: "\ttab\t" } });
+    expect(read(write(book).bytes).model).toEqual(book);
+  });
+
+  test("4 cells far apart keep their places, whatever the order they were added", () => {
+    const book = sheet("S", { XFD1048576: { value: "last" }, C3: { value: 3 }, A1: { value: 1 }, AA2: { value: 2 }, B1048575: { value: 4 } });
+    expect(read(write(book).bytes).model).toEqual(book);
+  });
+
+  test("7 the same model gives the same bytes", () => {
+    expect(write(fixture).bytes).toEqual(write(fixture).bytes);
+  });
+
+  test("8 a writer refuses a model it cannot write", () => {
+    const refuse = (book: Workbook, limits = {}) => expect(() => write(book, limits)).toThrow(FormatError);
+    refuse({ sheets: [] });
+    refuse({ sheets: [{ name: "A", cells: {} }, { name: "a", cells: {} }] });
+    for (const name of ["", "x".repeat(32), "a/b", "a:b", "[a]", "a?", "a*", "a\\b", "'a", "a'"]) refuse({ sheets: [{ name, cells: {} }] });
+    for (const ref of ["A0", "a1", "AAAA1", "1A", "XFE1", "A1048577", "A01"]) refuse(sheet("S", { [ref]: { value: 1 } }));
+    for (const value of [Number.NaN, Infinity, -Infinity]) refuse(sheet("S", { A1: { value } }));
+    refuse(sheet("S", { A1: { value: 1 }, A2: { value: 2 } }), { maxCells: 1 });
+  });
+
+  test("6 every XML part parses with an independent parser", () => {
+    const files = unzipSync(write(fixture).bytes);
+    const xml = Object.keys(files).filter((n) => /\.(xml|rels)$/.test(n));
+    expect(xml.length).toBeGreaterThanOrEqual(4);
+    for (const name of xml) wellFormed(strFromU8(files[name]));
+  });
+});
+
+describe("ods package", () => {
+  test("6 `mimetype` is first and stored, and the manifest carries `manifest:version`", () => {
+    const { bytes } = writeOds(fixture);
+    expect(strFromU8(bytes.subarray(30, 38))).toBe("mimetype");
+    expect(new DataView(bytes.buffer, bytes.byteOffset).getUint16(8, true)).toBe(0);
+    expect(strFromU8(unzipSync(bytes)["META-INF/manifest.xml"])).toMatch(/<manifest:manifest [^>]*manifest:version="1\.3"/);
+  });
+
+  test("8 a format that ODS cannot hold is reported and the value is kept", () => {
+    const book = sheet("S", { A1: { value: 1, format: "[$€-407] #,##0.00" } });
+    const { bytes, warnings } = writeOds(book);
+    expect(warnings).toEqual(['the number format "[$€-407] #,##0.00" is not written in ODS']);
+    expect(readOds(bytes).model).toEqual(sheet("S", { A1: { value: 1 } }));
+  });
+
+  test("3 dates are real dates in the file", () => {
+    const content = strFromU8(unzipSync(writeOds(fixture).bytes)["content.xml"]);
+    expect(content).toContain('office:value-type="date" office:date-value="2023-03-15"');
+    expect(content).toContain('table:formula="of:=[$\'Other Sheet\'.A1]&amp;&quot;-x&quot;"');
+    expect(content).toContain("CONCATENATE(&quot;A1,B2;&quot;;[.A2])");
+  });
+});
+
+describe("xlsx package", () => {
+  test("6 every part is in the content types, and every relationship target exists", () => {
+    const files = unzipSync(writeXlsx(fixture).bytes);
+    const types = strFromU8(files["[Content_Types].xml"]);
+    for (const part of Object.keys(files).filter((n) => n.endsWith(".xml") && n !== "[Content_Types].xml")) expect(types).toContain(`PartName="/${part}"`);
+    expect(Object.keys(files)[0]).toBe("[Content_Types].xml");
+    const rels = strFromU8(files["xl/_rels/workbook.xml.rels"]);
+    for (const target of [...rels.matchAll(/Target="([^"]+)"/g)].map((m) => m[1])) expect(files[`xl/${target}`]).toBeDefined();
+  });
+
+  test("3 numbers use built-in format ids where they exist, and custom ones for the rest", () => {
+    const styles = strFromU8(unzipSync(writeXlsx(fixture).bytes)["xl/styles.xml"]);
+    expect(styles).toContain('<numFmt numFmtId="164" formatCode="yyyy-mm-dd"/>');
+    for (const id of [1, 2, 3, 4, 9, 10]) expect(styles).toContain(`<xf numFmtId="${id}"`);
+  });
+
+  test("3 any format code is kept as written", () => {
+    const book = sheet("S", { A1: { value: 5, format: '#,##0.0" kg"' } });
+    expect(readXlsx(writeXlsx(book).bytes).model).toEqual(book);
+  });
+});
+
+describe("formulas", () => {
+  const pairs: [string, string][] = [
+    ["SUM(A1:B2)", "SUM([.A1:.B2])"],
+    ["SUM(A1,B2,3)", "SUM([.A1];[.B2];3)"],
+    ["$A$1+B$2+$C3", "[.$A$1]+[.B$2]+[.$C3]"],
+    ["Sheet2!A1:B2", "[$Sheet2.A1:.B2]"],
+    ["'My Sheet'!A1*2", "[$'My Sheet'.A1]*2"],
+    ["LOG10(A1)+ATAN2(1,2)", "LOG10([.A1])+ATAN2(1;2)"],
+    ['CONCATENATE("A1,B2;","x""y")', 'CONCATENATE("A1,B2;";"x""y")'],
+    ["IF(A1>0,\"[.A1]\",\"\")", "IF([.A1]>0;\"[.A1]\";\"\")"],
+  ];
+  test.each(pairs)("2 %s", (a1, open) => {
+    expect(toOpenFormula(a1)).toBe(open);
+    expect(fromOpenFormula(open)).toBe(a1);
+  });
+
+  test("2 an OpenFormula reference outside the A1 forms is refused, not guessed", () => {
+    expect(fromOpenFormula("SUM([.A:.A])")).toBeUndefined();
+    expect(fromOpenFormula("[$'file.ods'#$Sheet1.A1]")).toBeUndefined();
+  });
+
+  test("3 serial numbers and ISO dates convert both ways", () => {
+    expect(serialToIso(45000)).toBe("2023-03-15");
+    expect(serialToIso(45000.5)).toBe("2023-03-15T12:00:00");
+    expect(isoToSerial("2023-03-15")).toBe(45000);
+    expect(isoToSerial("2023-03-15T12:00:00")).toBe(45000.5);
+    expect(isoToSerial("March 15")).toBeUndefined();
+  });
+});
+
+describe("hostile files", () => {
+  const ods = (body: string, mime = "application/vnd.oasis.opendocument.spreadsheet") =>
+    writeZip(
+      [
+        { name: "mimetype", data: mime, store: true },
+        {
+          name: "content.xml",
+          data: `<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet>${body}</office:spreadsheet></office:body></office:document-content>`,
+        },
+      ],
+      withLimits(),
+    );
+  const table = (rows: string) => `<table:table table:name="S">${rows}</table:table>`;
+  const one = writeXlsx(sheet("S", { A1: { value: "x" } })).bytes;
+
+  test("9 a DOCTYPE with an entity is refused", () => {
+    const withDoctype = patch(writeOds(sheet("S", { A1: { value: "x" } })).bytes, "content.xml", (x) => x.replace("?>", `?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>`));
+    expect(() => readOds(withDoctype)).toThrow(/DOCTYPE/);
+    expect(() => readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace("?>", `?><!DOCTYPE x [<!ENTITY e "x">]>`)))).toThrow(/DOCTYPE/);
+  });
+
+  test("9 the wrong type of file is refused", () => {
+    expect(() => readOds(ods(table(""), "application/vnd.oasis.opendocument.text"))).toThrow(/not an ODS/);
+    expect(() => readOds(one)).toThrow(FormatError);
+    expect(() => readXlsx(writeOds(fixture).bytes)).toThrow(FormatError);
+    expect(() => readXlsx(patch(one, "[Content_Types].xml", (x) => x.replace("spreadsheetml.sheet.main", "wordprocessingml.document.main")))).toThrow(/not an XLSX/);
+    expect(() => readXlsx(new TextEncoder().encode("PK nope"))).toThrow(FormatError);
+  });
+
+  test("9 a huge repeat count on a cell or a row is refused before it grows", () => {
+    const cell = (extra: string) => `<table:table-row ${extra}><table:table-cell office:value-type="float" office:value="1" ${extra}/></table:table-row>`;
+    expect(() => readOds(ods(table(cell('table:number-columns-repeated="1000000000"'))))).toThrow(/more than/);
+    expect(() => readOds(ods(table(cell('table:number-rows-repeated="1000000000"'))))).toThrow(/more than/);
+  });
+
+  test("9 a repeat count on an empty cell or row is fine, as LibreOffice writes it", () => {
+    const body = table(`<table:table-row><table:table-cell office:value-type="float" office:value="1"/><table:table-cell table:number-columns-repeated="1000000"/></table:table-row><table:table-row table:number-rows-repeated="1048575"><table:table-cell table:number-columns-repeated="16384"/></table:table-row>`);
+    expect(readOds(ods(body)).model).toEqual(sheet("S", { A1: { value: 1 } }));
+  });
+
+  test("9 a cell off the grid, a shared string past the table, and too many cells", () => {
+    expect(() => readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1"', 'r="XFE1"')))).toThrow(/sheet grid/);
+    expect(() => readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1" t="s"><v>9</v>')))).not.toThrow();
+    const missing = readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1" t="s"><v>9</v>')));
+    expect(missing.warnings).toEqual(["a cell points to a missing shared string"]);
+    expect(missing.model).toEqual(sheet("S", {}));
+    const many = sheet("S", { A1: { value: 1 }, A2: { value: 2 }, A3: { value: 3 } });
+    expect(() => readXlsx(writeXlsx(many).bytes, { maxCells: 2 })).toThrow(/more than 2 cells/);
+    expect(() => readOds(writeOds(many).bytes, { maxCells: 2 })).toThrow(/more than 2 cells/);
+  });
+
+  test("9 a relationship that leaves the package, or points nowhere, is refused or skipped", () => {
+    const escape = patch(one, "xl/_rels/workbook.xml.rels", (x) => x.replace('Target="worksheets/sheet1.xml"', 'Target="../../etc/passwd"'));
+    expect(() => readXlsx(escape)).toThrow(/no sheet/);
+    const unknown = patch(one, "xl/_rels/workbook.xml.rels", (x) => x.replace('Id="rId1"', 'Id="rId9"'));
+    expect(() => readXlsx(unknown)).toThrow(/no sheet/);
+  });
+
+  test("9 an external link and an external formula reference are text, never fetched", () => {
+    const book = sheet("S", { A1: { value: 1, formula: "'[1]Other'!A1" }, A2: { value: "x", formula: 'HYPERLINK("http://evil.example/a","x")' } });
+    const back = readXlsx(writeXlsx(book).bytes);
+    expect(back.model).toEqual(book);
+  });
+});
+
+describe.skipIf(!hasLibreOffice && !libreOfficeRequired)("LibreOffice round trip", () => {
+  const lo = hasLibreOffice ? new LibreOffice() : undefined;
+  const records: RoundTripRecord[] = [];
+  afterAll(() => {
+    lo?.dispose();
+    writeArtifact("spreadsheet-roundtrip", records);
+  });
+
+  test.each(formats)("10 LibreOffice opens our %s, prints it, and its re-save reads back to the same model", { timeout: 300_000 }, (format) => {
+    expect(hasLibreOffice).toBe(true);
+    const { bytes } = writers[format](fixture);
+    const pdf = lo!.convert(bytes, format, "pdf");
+    expect(strFromU8(pdf.subarray(0, 5))).toBe("%PDF-");
+    const text = strFromU8(lo!.convert(bytes, format, "csv"));
+    expect(text).toContain("far");
+    const resaved = lo!.convert(bytes, format, format);
+    const back = readers[format](resaved);
+    records.push({ format, case: "fixture", written: sha256(bytes), resaved: sha256(resaved), pdfBytes: pdf.length, equal: isDeepStrictEqual(back.model, fixture) });
+    expect(back.model).toEqual(fixture);
+  });
+
+  test.each([
+    ["xlsx", "ods"],
+    ["ods", "xlsx"],
+  ] as const)("10 %s through LibreOffice to %s reads back to the same model", { timeout: 300_000 }, (from, to) => {
+    const { bytes } = writers[from](fixture);
+    const converted = lo!.convert(bytes, from, to);
+    const back = readers[to](converted);
+    records.push({ format: `${from}->${to}`, case: "fixture", written: sha256(bytes), resaved: sha256(converted), pdfBytes: 0, equal: isDeepStrictEqual(back.model, fixture) });
+    expect(back.model).toEqual(fixture);
+  });
+
+  test.each(formats)("10 LibreOffice computes a %s formula that has no cached result", { timeout: 300_000 }, (format) => {
+    const book = sheet("S", { A1: { value: 20 }, A2: { value: 22 }, A3: { formula: "SUM(A1:A2)" } });
+    const csv = strFromU8(lo!.convert(writers[format](book).bytes, format, "csv"));
+    expect(csv.trim().split("\n")).toEqual(["20", "22", "42"]);
+  });
+});

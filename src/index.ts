@@ -38,3 +38,7 @@ export { childOf, elementsOf, parseXml, safeHref, textOf, xmlEscape } from "./xm
 export type { Namespaces, XmlElement } from "./xml.js";
 export { ODT_MIME, readOdt, writeOdt } from "./odt.js";
 export { frameSize, lengthPt, sniffImage } from "./image.js";
+export { ODS_MIME, readOds, writeOds } from "./ods.js";
+export { readXlsx, writeXlsx } from "./xlsx.js";
+export { fromOpenFormula, toOpenFormula } from "./formula.js";
+export { isoToSerial, serialToIso } from "./spreadsheet.js";

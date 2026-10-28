@@ -1,0 +1,53 @@
+import { FormatError, type Limits } from "./limits.js";
+import { parseRef, type Cell, type Workbook } from "./model.js";
+
+/** The formats an ODS file holds as data styles. XLSX stores any code as it is. */
+export const ODS_FORMAT = /^(#,##0|0)(\.0+)?%?$|^yyyy-mm-dd$/;
+export const isDateFormat = (format: string | undefined): boolean => format === "yyyy-mm-dd";
+
+const DAY_MS = 86_400_000;
+const EPOCH = Date.UTC(1899, 11, 30);
+
+/** Days since 1899-12-30 as an ISO date, with a time when the serial has a fraction. Valid from serial 61. */
+export function serialToIso(serial: number): string | undefined {
+  const ms = EPOCH + Math.round(serial * DAY_MS);
+  if (!Number.isFinite(ms) || Math.abs(ms - EPOCH) > 3_000_000 * DAY_MS) return undefined;
+  const iso = new Date(ms).toISOString();
+  return serial % 1 === 0 ? iso.slice(0, 10) : iso.slice(0, 19);
+}
+
+export function isoToSerial(iso: string): number | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?)?$/.test(iso)) return undefined;
+  const ms = Date.parse(`${iso}${iso.length > 10 ? "" : "T00:00:00"}Z`);
+  return Number.isNaN(ms) ? undefined : (ms - EPOCH) / DAY_MS;
+}
+
+const BAD_SHEET_CHARS = /[[\]:*?/\\]/;
+
+/** Refuse a workbook that no writer could write: bad sheet names, cells off the grid, numbers that are not finite. */
+export function checkWorkbook(book: Workbook, limits: Limits): void {
+  const bad = (message: string): never => {
+    throw new FormatError("INVALID_MODEL", message);
+  };
+  if (book.sheets.length === 0) bad("a workbook needs at least one sheet");
+  const names = new Set<string>();
+  let cells = 0;
+  for (const sheet of book.sheets) {
+    const { name } = sheet;
+    if (!name || name.length > 31 || BAD_SHEET_CHARS.test(name) || name.startsWith("'") || name.endsWith("'")) bad(`"${name}" is not a usable sheet name`);
+    if (names.has(name.toLowerCase())) bad(`the sheet name "${name}" is used twice`);
+    names.add(name.toLowerCase());
+    for (const [ref, cell] of Object.entries(sheet.cells)) {
+      if (!parseRef(ref)) bad(`"${ref}" is not a cell reference on the sheet grid`);
+      if (++cells > limits.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${limits.maxCells} cells`);
+      if (typeof cell.value === "number" && !Number.isFinite(cell.value)) bad(`${sheet.name}!${ref} holds a number that is not finite`);
+      if (cell.formula !== undefined && (typeof cell.formula !== "string" || cell.formula.length > 8192)) bad(`${sheet.name}!${ref} holds a formula that is not usable`);
+    }
+  }
+}
+
+/** A cell with something to write. */
+export const hasContent = (cell: Cell): boolean => cell.value !== undefined || cell.formula !== undefined || cell.format !== undefined;
+
+/** LibreOffice saves a boolean cell as the formula `TRUE()` or `FALSE()`. That is a value, not a formula. */
+export const isBooleanLiteral = (formula: string, value: unknown): boolean => typeof value === "boolean" && formula.toUpperCase() === (value ? "TRUE()" : "FALSE()");

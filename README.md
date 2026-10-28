@@ -7,8 +7,8 @@
 
 Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.
 
-> Status: early. The neutral models, the input guards, and ODT work. The other formats land
-> next, one family per release. The package is not on npm yet.
+> Status: early. The neutral models, the input guards, ODT, ODS, and XLSX work. The other
+> formats land next, one family per release. The package is not on npm yet.
 
 ## Install
 
@@ -30,6 +30,11 @@ npm install agentic-formats
   tables with a header row, images, footnotes, and the document title. A round-trip test has
   LibreOffice open, print, and re-save our file, and the re-saved file reads back to the same model.
   Each reader and writer returns warnings that name what the format could not hold.
+- **ODS and XLSX.** `readOds`, `writeOds`, `readXlsx`, and `writeXlsx` handle several sheets,
+  strings, numbers, booleans, formulas as text with their cached result, and number formats.
+  Formulas use A1 notation in the model (`SUM(A1:B2,Sheet2!C3)`). The ODS code converts them to
+  OpenFormula and back. Dates are serial numbers with the `yyyy-mm-dd` format. LibreOffice
+  round trips cover both formats and the trip from one to the other.
 - **Normalizing.** `normalizeTextDoc` merges equal runs, so you can compare two documents.
 
 ```ts
@@ -45,12 +50,18 @@ try {
 
 ## Planned
 
-- DOCX documents, ODS and XLSX spreadsheets, ODP and PPTX slide decks.
+- DOCX documents, ODP and PPTX slide decks.
 - A CLI (`agentic-formats convert in.odt out.docx`) and MCP tools.
 - Round-trip tests against LibreOffice output.
 
 ## Limits
 
+- Number formats: ODS keeps `0`, `0.00`, `#,##0`, `#,##0.00`, `0%`, `0.00%`, and `yyyy-mm-dd`
+  (and more decimals). XLSX keeps any format code as text. Another format in ODS is reported in
+  `warnings` and the value stays.
+- Spreadsheets: no merged cells, styles, charts, or pivot tables. A formula that uses a reference
+  outside A1 notation (a whole column, an external file) is read as its value, with a warning.
+  A shared XLSX formula is read as its value. Time cells read as a fraction of a day.
 - ODT has no support for merged cells, comments, tracked changes, text boxes, or styles beyond the
   marks in the model. A reader lists each one it skips in `warnings`.
 - A list item holds one paragraph and an optional sublist. Extra paragraphs join with line breaks.
@@ -66,7 +77,7 @@ npm run ci:local
 ```
 
 The round-trip tests need LibreOffice (`soffice` on the path). Set `REQUIRE_LIBREOFFICE=1` to fail
-when it is missing. Without it, those tests skip. A run writes `artifacts/odt-roundtrip.json`.
+when it is missing. Without it, those tests skip. A run writes the records in `artifacts/`.
 
 ## License
 
