@@ -240,15 +240,22 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   }
 
   const sheets: Sheet[] = [];
-  for (const table of elementsOf(body).filter((t) => t.name === "table:table")) {
+  const tables = elementsOf(body).filter((t) => t.name === "table:table");
+  // The writers refuse more sheets than this, so a file that holds more is not read.
+  if (tables.length > caps.maxEntries / 4) throw new FormatError("LIMIT_EXCEEDED", `the ODS file holds more than ${caps.maxEntries / 4} sheets`);
+  for (const table of tables) {
     const cells: Record<string, Cell> = {};
-    const columnStyles: (string | undefined)[] = [];
+    // Only a column with a style is stored, so a column element that repeats 16,384 times costs nothing when it has none.
+    const columnStyles = new Map<number, string>();
+    let columnCount = 0;
     let row = 0;
     const walk = (parent: XmlElement): void => {
       for (const k of elementsOf(parent)) {
         if (k.name === "table:table-column") {
           const style = k.attrs["table:default-cell-style-name"];
-          for (let i = repeatOf(k, "table:number-columns-repeated"); i > 0 && columnStyles.length < MAX_COLUMN; i--) columnStyles.push(style);
+          const repeated = Math.min(repeatOf(k, "table:number-columns-repeated"), MAX_COLUMN - columnCount);
+          if (style !== undefined) for (let i = 0; i < repeated; i++) columnStyles.set(columnCount + i, style);
+          columnCount += Math.max(0, repeated);
         } else if (k.name === "table:table-row") {
           const rowRepeat = repeatOf(k, "table:number-rows-repeated");
           const found: [number, Cell][] = [];
@@ -256,7 +263,7 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
           for (const c of elementsOf(k)) {
             if (c.name !== "table:table-cell" && c.name !== "table:covered-table-cell") continue;
             const repeat = repeatOf(c, "table:number-columns-repeated");
-            const cell = cellOf(c, columnStyles[column]);
+            const cell = cellOf(c, columnStyles.get(column));
             if (c.name === "table:covered-table-cell" || c.attrs["table:number-columns-spanned"] || c.attrs["table:number-rows-spanned"]) warn("merged cells were read as single cells");
             if (cell) {
               count(repeat * rowRepeat);

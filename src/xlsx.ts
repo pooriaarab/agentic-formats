@@ -209,7 +209,7 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
         }
         const format = formatOfStyle[Number(c.attrs.s ?? 0)];
         if (value === undefined && formula === undefined && !(format && c.attrs.s)) continue;
-        chargeText((typeof value === "string" ? value.length : 0) + (formula?.length ?? 0));
+        chargeText((typeof value === "string" ? value.length : 0) + (formula?.length ?? 0) + (format?.length ?? 0));
         if (++cellCount > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${caps.maxCells} cells`);
         cells[refOf(at.column, at.row)] = { ...(value !== undefined ? { value } : {}), ...(formula !== undefined ? { formula } : {}), ...(format ? { format } : {}) };
       }

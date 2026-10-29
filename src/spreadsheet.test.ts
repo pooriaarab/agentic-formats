@@ -355,6 +355,33 @@ describe("hostile files", () => {
     expect(fromOpenFormula("[[.A1]")).toBe("[A1");
   });
 
+  test("12 many sheets that each repeat a column are refused fast, and a column style still reaches its cells", { timeout: 60_000 }, () => {
+    const wide = `<table:table table:name="W"><table:table-column table:number-columns-repeated="16384"/></table:table>`;
+    const started = Date.now();
+    expect(() => readOds(ods(wide.repeat(1300)))).toThrow(/more than 1250 sheets/);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(() => writeOds({ sheets: Array.from({ length: 1300 }, (_, i) => ({ name: `S${i}`, cells: {} })) })).toThrow(/at most 1250 sheets/);
+    const styled = ods(
+      `<style:style xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" style:name="pct" style:family="table-cell" style:data-style-name="N1"/>` +
+        `<number:percentage-style xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" style:name="N1"><number:number number:decimal-places="0"/><number:text>%</number:text></number:percentage-style>` +
+        `<table:table table:name="S"><table:table-column table:number-columns-repeated="2"/><table:table-column table:default-cell-style-name="pct"/><table:table-row><table:table-cell/><table:table-cell/><table:table-cell office:value-type="float" office:value="0.5"/></table:table-row></table:table>`,
+    );
+    expect(readOds(styled).model.sheets[0].cells.C1).toMatchObject({ value: 0.5, format: "0%" });
+  });
+
+  test("12 one number format that every cell points to counts for each cell", () => {
+    const code = "0.00_" + "x".repeat(50_000);
+    const xlsx = (cells: number) => {
+      const base = writeXlsx(sheet("S", { A1: { value: 1, format: code } })).bytes;
+      const sheetXml = (x: string) => x.replace(/<sheetData>.*<\/sheetData>/, `<sheetData>${Array.from({ length: cells }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}" s="1"/></row>`).join("")}</sheetData>`);
+      return patch(base, "xl/worksheets/sheet1.xml", sheetXml);
+    };
+    const caps = { maxTextChars: 120_000 };
+    expect(Object.keys(readXlsx(xlsx(2), caps).model.sheets[0].cells)).toHaveLength(2);
+    expect(() => readXlsx(xlsx(3), caps)).toThrow(/characters of cell text/);
+    expect(() => writeXlsx(sheet("S", Object.fromEntries(Array.from({ length: 3 }, (_, i) => [`A${i + 1}`, { value: 1, format: code }]))), caps)).toThrow(/characters of cell text/);
+  });
+
   test("12 a cell style chain past the depth cap is refused, and a loop in the parents ends the walk", () => {
     const style = (name: string, parent?: string) => `<style:style xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" style:name="${name}" style:family="table-cell"${parent ? ` style:parent-style-name="${parent}"` : ""}/>`;
     const withCell = (styles: string, used: string) => ods(`${styles}${table(`<table:table-row><table:table-cell table:style-name="${used}" office:value-type="float" office:value="1"/></table:table-row>`)}`);

@@ -34,6 +34,7 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
   };
   if (!Array.isArray(book?.sheets)) bad("a workbook needs a list of sheets");
   if (book.sheets.length === 0) bad("a workbook needs at least one sheet");
+  if (book.sheets.length > limits.maxEntries / 4) throw new FormatError("LIMIT_EXCEEDED", `a workbook holds at most ${limits.maxEntries / 4} sheets`);
   const names = new Set<string>();
   let cells = 0;
   const chargeText = capped(limits.maxTextChars, `the workbook has more than ${limits.maxTextChars} characters of cell text`);
@@ -53,7 +54,7 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
       if (typeof cell.value === "number" && !Number.isFinite(cell.value)) bad(`${sheet.name}!${ref} holds a number that is not finite`);
       if (cell.formula !== undefined && (typeof cell.formula !== "string" || cell.formula.length > MAX_FORMULA)) bad(`${sheet.name}!${ref} holds a formula that is not usable`);
       // A string that many cells point to is written once for each cell, so it counts once for each cell.
-      chargeText((typeof cell.value === "string" ? cell.value.length : 0) + (cell.formula?.length ?? 0));
+      chargeText((typeof cell.value === "string" ? cell.value.length : 0) + (cell.formula?.length ?? 0) + (cell.format?.length ?? 0));
     }
   }
 }
