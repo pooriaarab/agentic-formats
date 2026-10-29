@@ -418,6 +418,69 @@ describe("hostile files", () => {
     expect(read.warnings).toEqual(['the sheet "T" shares its worksheet part with an earlier sheet: not imported']);
   });
 
+  test("13 content the XLSX reader drops is named in a warning", () => {
+    const sheetXml = (x: string, ...changes: [string, string][]) => changes.reduce((acc, [a, b]) => acc.replace(a, b), x);
+    const warnings = (bytes: Uint8Array) => readXlsx(bytes).warnings;
+    const withSheet = (add: string) => patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace("</worksheet>", `${add}</worksheet>`));
+    expect(warnings(withSheet('<drawing r:id="rId9"/>'))).toEqual(["charts, images, or comments were not read"]);
+    expect(warnings(withSheet('<conditionalFormatting sqref="A1"/>'))).toEqual(["conditional formats or data validation rules were not read"]);
+    expect(warnings(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", '</sheets><definedNames><definedName name="n">S!A1</definedName></definedNames>')))).toEqual(["named ranges, print areas, or filters were not read"]);
+    expect(warnings(patch(one, "xl/workbook.xml", (x) => sheetXml(x, ["<sheet ", '<sheet state="hidden" ']))).slice(0, 1)).toEqual(["a hidden sheet was read as visible"]);
+    expect(warnings(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1"><v>abc</v>')))).toEqual(["a cell value that is not a number or a date was not read"]);
+    expect(warnings(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1"', 'r="A1" s="99"')))).toEqual(["a cell points to a missing style"]);
+    expect(warnings(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1"><f t="array" ref="A1">1+1</f><v>2</v>')))).toEqual(["an array formula or data table was read as a plain formula"]);
+  });
+
+  test("13 one unknown format id used by many styles counts once past the cap", () => {
+    const xfs = [...Array.from({ length: 50 }, (_, i) => 100 + i), ...Array.from({ length: 1000 }, () => 999)].map((id) => `<xf numFmtId="${id}"/>`).join("");
+    const read = readXlsx(patch(one, "xl/styles.xml", (x) => x.replace("</cellXfs>", `${xfs}</cellXfs>`)));
+    expect(read.warnings).toHaveLength(51);
+    expect(read.warnings[50]).toBe("1 more warnings");
+  });
+
+  test("13 one sheet name used again and again past the cap counts once", () => {
+    const names = [...Array.from({ length: 60 }, (_, i) => `c${i}`), ...Array.from({ length: 60 }, () => "dup")];
+    const entries = names.map((n, i) => `<sheet name="${n}" sheetId="${i + 10}" r:id="rIdX${i}"/>`).join("");
+    const rels = names.map((_, i) => `<Relationship Id="rIdX${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="c${i}.xml"/>`).join("");
+    const bytes = patch(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", `${entries}</sheets>`)), "xl/_rels/workbook.xml.rels", (x) => x.replace("</Relationships>", `${rels}</Relationships>`));
+    expect(readXlsx(bytes).warnings.at(-1)).toBe("11 more warnings");
+  });
+
+  test("13 rich text in an inline string is named in a warning", () => {
+    const read = readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('<is><t xml:space="preserve">x</t></is>', "<is><r><rPr><b/></rPr><t>x</t></r></is>")));
+    expect(read.model).toEqual(sheet("S", { A1: { value: "x" } }));
+    expect(read.warnings).toEqual(["text styles inside a cell were not read"]);
+  });
+
+  test("13 names past the cap never hide a fixed warning, and a repeated fixed warning is one line", () => {
+    const rels = Array.from({ length: 60 }, (_, i) => `<Relationship Id="rIdX${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="c${i}.xml"/>`).join("");
+    const entries = Array.from({ length: 60 }, (_, i) => `<sheet name="c${i}" sheetId="${i + 10}" r:id="rIdX${i}"/>`).join("");
+    const cells = Array.from({ length: 1000 }, (_, i) => `<c r="B${i + 1}" s="99"><v>1</v></c>`).join("");
+    const bytes = patch(patch(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", `${entries}</sheets>`)), "xl/_rels/workbook.xml.rels", (x) => x.replace("</Relationships>", `${rels}</Relationships>`)), "xl/worksheets/sheet1.xml", (x) => x.replace("</row>", `${cells}</row>`).replace("</sheetData>", "</sheetData><mergeCells/>"));
+    const { warnings } = readXlsx(bytes);
+    expect(warnings).toContain("a cell points to a missing style");
+    expect(warnings).toContain("merged cells were read as single cells");
+    expect(warnings.filter((w) => w === "a cell points to a missing style")).toHaveLength(1);
+    expect(warnings).toContain("10 more warnings");
+  });
+
+  test("13 rich text runs in a shared string are named in a warning", () => {
+    const bytes = patch(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1" t="s"><v>0</v>')), "xl/_rels/workbook.xml.rels", (x) => x.replace("</Relationships>", '<Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>'));
+    const withStrings = writeZip([...Object.entries(unzipSync(bytes)).map(([name, data]) => ({ name, data, store: name === "mimetype" })), { name: "xl/sharedStrings.xml", data: '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><r><rPr><b/></rPr><t>bold</t></r></si></sst>', store: false }], withLimits());
+    const read = readXlsx(withStrings);
+    expect(read.model).toEqual(sheet("S", { A1: { value: "bold" } }));
+    expect(read.warnings).toEqual(["text styles inside a cell were not read"]);
+  });
+
+  test("13 many warnings are capped, with one line that counts the rest, and a long sheet name is cut", () => {
+    const entries = Array.from({ length: 300 }, (_, i) => `<sheet name="${i}${"n".repeat(500)}" sheetId="${i + 10}" r:id="rIdX${i}"/>`).join("");
+    const read = readXlsx(patch(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", `${entries}</sheets>`)), "xl/_rels/workbook.xml.rels", (x) => x.replace("</Relationships>", `${Array.from({ length: 300 }, (_, i) => `<Relationship Id="rIdX${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="c${i}.xml"/>`).join("")}</Relationships>`)));
+    expect(read.warnings).toHaveLength(51);
+    expect(read.warnings[50]).toBe("250 more warnings");
+    expect(read.warnings.slice(0, 50).every((w) => w.startsWith("the sheet "))).toBe(true);
+    expect(Math.max(...read.warnings.map((w) => w.length))).toBeLessThan(120);
+  });
+
   test("12 many distinct number formats write fast, and the ODS warnings stay short", () => {
     const cells = Object.fromEntries(Array.from({ length: 20_000 }, (_, i) => [`A${i + 1}`, { value: 1, format: `0.00_${i}` }]));
     const started = Date.now();

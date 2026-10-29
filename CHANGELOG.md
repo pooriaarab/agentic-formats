@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Output files are written to a temporary file and renamed, so a failed write keeps the old file.
+- The XLSX reader returns at most 50 warnings that quote a name from the file, and one "N more warnings" line, and it names more dropped content: named ranges, print areas, hidden sheets, charts and comments, conditional formats, array formulas, rich text, values it cannot read, and missing styles.
 
 ## 0.1.0
 
