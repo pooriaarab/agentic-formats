@@ -174,7 +174,7 @@ describe("inspect", () => {
       footnotes: 1,
       warnings: [],
     });
-    expect(json(run("inspect", "sheet.xlsx").stdout)).toMatchObject({ kind: "sheet", sheets: [{ name: "Sales", cells: 4, formulas: 1 }, { name: "Two", cells: 1, formulas: 0 }] });
+    expect(json(run("inspect", "sheet.xlsx").stdout)).toMatchObject({ kind: "sheet", sheetCount: 2, sheets: [{ name: "Sales", cells: 4, formulas: 1 }, { name: "Two", cells: 1, formulas: 0 }] });
     expect(json(run("inspect", "deck.pptx").stdout)).toMatchObject({ kind: "deck", width: 720, height: 405, slides: 3, shapes: { textbox: 3, shape: 3, picture: 1 }, notes: 2 });
   });
 
@@ -373,6 +373,23 @@ describe("mcp output links", () => {
       const read = await call(client, "read_model", { path: "photo.odt" });
       expect(read.isError).toBe(false);
       expect(read.text).toContain('"bytes":5000000');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("9 inspect lists at most 100 sheets and says how many there are", { timeout: 120_000 }, async () => {
+    const root = at("sheets-root");
+    mkdirSync(root, { recursive: true });
+    const one = writeOds({ sheets: [{ name: "S", cells: { A1: { value: 1 } } }] }).bytes;
+    const tables = Array.from({ length: 5000 }, (_, i) => `<table:table table:name="Sheet${i}"/>`).join("");
+    writeFileSync(join(root, "sheets.ods"), zipSync(Object.fromEntries(Object.entries(unzipSync(one)).map(([n, data]) => [n, n === "content.xml" ? strToU8(strFromU8(data).replace(/<table:table .*<\/table:table>/s, tables)) : data]))));
+    const client = await connect(root);
+    try {
+      const inspected = JSON.parse((await call(client, "inspect_file", { path: "sheets.ods" })).text) as { sheetCount: number; sheets: { name: string }[] };
+      expect(inspected.sheetCount).toBe(5000);
+      expect(inspected.sheets).toHaveLength(100);
+      expect(inspected.sheets[99].name).toBe("Sheet99");
     } finally {
       await client.close();
     }

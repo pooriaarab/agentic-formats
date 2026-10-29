@@ -14,6 +14,7 @@ export type Format = "odt" | "docx" | "ods" | "xlsx" | "odp" | "pptx";
 /** The most warnings, and the longest one, that a file reports to its caller. A hostile file can name its own warnings. */
 const MAX_WARNINGS = 100;
 const MAX_WARNING_CHARS = 300;
+const MAX_LISTED_SHEETS = 100;
 
 /** Keep the first warnings and cut the long ones, so a hostile file cannot flood a reply with text it chose. */
 export function capWarnings(warnings: string[]): string[] {
@@ -102,7 +103,13 @@ export function inspect(bytes: Uint8Array, format: Format, limits?: Partial<Limi
   // A sheet name comes from the file and has no length limit when it is read.
   const shortName = (name: string) => (name.length > MAX_WARNING_CHARS ? `${name.slice(0, MAX_WARNING_CHARS)}...` : name);
   if (loaded.kind === "sheet") {
-    return { ...base, sheets: loaded.model.sheets.map((s) => ({ name: shortName(s.name), cells: Object.keys(s.cells).length, formulas: Object.values(s.cells).filter((c) => c.formula !== undefined).length })) };
+    // A file can hold a million sheets, so the reply lists the first 100 and counts the rest.
+    const listed = loaded.model.sheets.slice(0, MAX_LISTED_SHEETS);
+    return {
+      ...base,
+      sheetCount: loaded.model.sheets.length,
+      sheets: listed.map((s) => ({ name: shortName(s.name), cells: Object.keys(s.cells).length, formulas: Object.values(s.cells).filter((c) => c.formula !== undefined).length })),
+    };
   }
   if (loaded.kind === "deck") {
     const shapes = { textbox: 0, shape: 0, picture: 0 };
