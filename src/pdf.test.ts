@@ -358,4 +358,40 @@ describe("PDF writer", () => {
     const r = writePdf({ blocks: [{ type: "table", rows: [[[inner]]] }] });
     expect(r.warnings).toContain("an image or footnote inside a nested table was not written");
   });
+
+  test("7 long inputs do not overflow the stack: 150000 breaks, 150000 list items", () => {
+    const run = Array.from({ length: 150_000 }, () => [text("a"), { type: "break" as const }]).flat();
+    expect(() => writePdf({ blocks: [{ type: "paragraph", content: run }] }, { maxEntries: 20_000 })).not.toThrow();
+    const items = Array.from({ length: 150_000 }, () => ({ content: [text("w")] }));
+    expect(() => writePdf({ blocks: [{ type: "list", ordered: false, items }] }, { maxEntries: 20_000 })).not.toThrow();
+  }, 60_000);
+
+  test("7 a sublist shared by many items stops at the work cap, fast", () => {
+    const leaf = { type: "list" as const, ordered: false, items: [{ content: [text("x")] }] };
+    const level = (sub: unknown) => ({ type: "list" as const, ordered: false, items: Array.from({ length: 400 }, () => ({ content: [text("i")], sublist: sub as never })) });
+    const started = Date.now();
+    expect(() => writePdf({ blocks: [level(level(level(leaf)))] })).toThrow(FormatError);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("7 footnotes nested 200000 deep are refused without recursion", () => {
+    let note: unknown = { type: "footnote", content: [text("end")] };
+    for (let i = 0; i < 200_000; i++) note = { type: "footnote", content: [note] };
+    expect(() => writePdf({ blocks: [{ type: "paragraph", content: [note as never] }] })).toThrow(FormatError);
+  });
+
+  test("2 a change of style inside a word is not a place to break", () => {
+    const { bytes } = writePdf({ blocks: [{ type: "paragraph", content: [text(`${"b".repeat(40)} ${"x".repeat(40)}`), { type: "text", text: "cccccc", marks: ["bold"] }, text(", after")] }] });
+    const lines = pdftotextOrNull(bytes);
+    if (lines) expect(lines).toMatch(/x+c{6},/);
+  });
+
+  test("4 a small PNG that declares a huge size is refused, not passed to the viewer", () => {
+    const huge = PNG.slice();
+    huge[25] = 2;
+    new DataView(huge.buffer).setUint32(16, 60_000);
+    new DataView(huge.buffer).setUint32(20, 60_000);
+    expect(() => writePdf({ blocks: [{ type: "paragraph", content: [{ type: "image", data: huge, mime: "image/png" }] }] })).toThrow(/unpacked|unpack/);
+  });
 });
+const pdftotextOrNull = (bytes: Uint8Array): string | null => (hasPdftotext ? pdftotext(bytes) : null);

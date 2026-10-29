@@ -189,6 +189,10 @@ class Pdf {
     if (ctype === 0 || ctype === 2 || ctype === 3) {
       if (ctype === 3 && (!palette || palette.length < 3 || palette.length > 768)) return skip("is a PNG with no palette");
       if ((ctype === 2 && depth < 8) || (ctype === 3 && depth > 8) || ![1, 2, 4, 8, 16].includes(depth)) return skip("is an unusual PNG");
+      // The viewer unpacks this stream, so its size counts against the same caps as an image that is unpacked here.
+      const unpacked = height * (1 + Math.ceil((width * colors * depth) / 8));
+      if (unpacked > this.caps.maxEntryBytes) throw new FormatError("LIMIT_EXCEEDED", "an image is larger than the entry limit when unpacked");
+      this.decoded(unpacked);
       const space = ctype === 3 ? `[/Indexed /DeviceRGB ${Math.floor(palette!.length / 3) - 1} <${[...palette!.subarray(0, Math.floor(palette!.length / 3) * 3)].map((b) => b.toString(16).padStart(2, "0")).join("")}>]` : ctype === 2 ? "/DeviceRGB" : "/DeviceGray";
       this.set(id, `<</Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace ${space} /BitsPerComponent ${depth} /Filter /FlateDecode /DecodeParms <</Predictor 15 /Colors ${colors} /BitsPerComponent ${depth} /Columns ${width}>>>>`, joined);
       return img;
@@ -385,29 +389,43 @@ function wrap(atoms: Atom[], size: number, width: number): Line[] {
     used = 0;
   };
   const w = Math.max(width, size);
+  const widthOf = (text: string, face: Face): number => [...text].reduce((n, c) => n + (charWidth(c.charCodeAt(0), face) * size) / 1000, 0);
+  // A word is the pieces between spaces, so a change of style inside a word is not a place to break.
+  type Piece = { text: string; atom: Atom; w: number };
+  let word: Piece[] = [];
+  const place = (): void => {
+    if (word.length === 0) return;
+    const total = word.reduce((n, p) => n + p.w, 0);
+    if (used > 0 && used + total > w) wrapAt();
+    if (total <= w) for (const p of word) push(p.text, p.atom, p.w);
+    else {
+      for (const p of word) {
+        for (const c of p.text) {
+          const cw = widthOf(c, p.atom.face);
+          if (used > 0 && used + cw > w) wrapAt();
+          push(c, p.atom, cw);
+        }
+      }
+    }
+    word = [];
+  };
   for (const a of atoms) {
     if (a.text === "\n") {
+      place();
       wrapAt();
       continue;
     }
     for (const token of a.text.match(/ +|[^ ]+/g) ?? []) {
-      const tw = [...token].reduce((n, c) => n + (charWidth(c.charCodeAt(0), a.face) * size) / 1000, 0);
-      if (token[0] === " ") {
-        if ((used > 0 || lines.length === 0) && used + tw <= w) push(token, a, tw);
+      const tw = widthOf(token, a.face);
+      if (token[0] !== " ") {
+        word.push({ text: token, atom: a, w: tw });
         continue;
       }
-      if (used > 0 && used + tw > w) wrapAt();
-      if (tw <= w) {
-        push(token, a, tw);
-        continue;
-      }
-      for (const c of token) {
-        const cw = (charWidth(c.charCodeAt(0), a.face) * size) / 1000;
-        if (used > 0 && used + cw > w) wrapAt();
-        push(c, a, cw);
-      }
+      place();
+      if ((used > 0 || lines.length === 0) && used + tw <= w) push(token, a, tw);
     }
   }
+  place();
   if (line.length || lines.length === 0) lines.push(line);
   return lines;
 }
@@ -498,6 +516,10 @@ interface Ctx {
   depth: number;
 }
 
+/** Add the items of `from` to `to`. Spreading a long list into `push` overflows the stack. */
+const append = (to: Item[], from: Item[]): void => {
+  for (const item of from) to.push(item);
+};
 const gap = (h: number): Item => ({ h, draw: () => {} });
 
 function lineItem(line: Line, size: number, dx: number): Item {
@@ -576,8 +598,8 @@ function listItems(ctx: Ctx, list: List, width: number, dx: number): Item[] {
     const lead = inner[0];
     if (lead) inner[0] = { h: lead.h, draw: (page, x, top) => (drawMarker(page, x, top), lead.draw(page, x, top)) };
     else inner.push({ h: BODY * 1.3, draw: drawMarker });
-    out.push(...inner);
-    if (item.sublist) out.push(...listItems(ctx, item.sublist, width, dx + 18));
+    for (const n of inner) out.push(n);
+    if (item.sublist) for (const n of listItems(ctx, item.sublist, width, dx + 18)) out.push(n);
   });
   return out;
 }
@@ -596,7 +618,7 @@ function tableItems(ctx: Ctx, block: Extract<Block, { type: "table" }>, width: n
       ctx.depth--;
       return items;
     });
-    let h = Math.max(0, ...cells.map((c) => c.reduce((n, i) => n + i.h, 0))) + 2 * CELL_PAD;
+    let h = cells.reduce((m, c) => Math.max(m, c.reduce((n, i) => n + i.h, 0)), 0) + 2 * CELL_PAD;
     if (h > CONTENT_H) {
       ctx.pdf.warnings.add("a table row taller than a page was cut to fit");
       h = CONTENT_H;
@@ -625,30 +647,49 @@ function flow(ctx: Ctx, blocks: Block[], width: number, dx: number, bold = false
   for (const block of blocks) {
     if (block.type === "heading") {
       const size = HEADING_SIZES[headingLevel(block.level) - 1];
-      items.push(gap(size * 0.4), ...inlineItems(ctx, block.content, width, dx, size, true), gap(3));
-    } else if (block.type === "paragraph") items.push(...inlineItems(ctx, block.content, width, dx, BODY, bold), gap(6));
-    else if (block.type === "list") items.push(...listItems(ctx, block, width, dx), gap(6));
+      items.push(gap(size * 0.4));
+      append(items, inlineItems(ctx, block.content, width, dx, size, true));
+      items.push(gap(3));
+    } else if (block.type === "paragraph") {
+      append(items, inlineItems(ctx, block.content, width, dx, BODY, bold));
+      items.push(gap(6));
+    } else if (block.type === "list") {
+      append(items, listItems(ctx, block, width, dx));
+      items.push(gap(6));
+    }
     else if (ctx.depth > 0) {
       ctx.pdf.warnings.add("a table inside a table was written as lines of text");
       if (hasRich(block)) ctx.pdf.warnings.add("an image or footnote inside a nested table was not written");
-      items.push(...inlineItems(ctx, [{ type: "text", text: plainText([block]).replace(/\n/g, " / ") }], width, dx, BODY, bold));
-    } else items.push(...tableItems(ctx, block, width), gap(8));
+      append(items, inlineItems(ctx, [{ type: "text", text: plainText([block]).replace(/\n/g, " / ") }], width, dx, BODY, bold));
+    } else {
+      append(items, tableItems(ctx, block, width));
+      items.push(gap(8));
+    }
   }
   return items;
 }
 
-function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: number }): void {
+function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: number; work: number }): void {
   checkList(blocks, "the blocks of a document");
   if (depth > Math.floor(caps.maxXmlDepth / 3)) throw new FormatError("INVALID_MODEL", "lists or tables nest too deep");
+  // A block, an item, or a node that the model holds in many places is laid out in each place, so each visit counts.
+  const tick = (): void => {
+    if (++cells.work > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the document has more than ${caps.maxCells} blocks, items, and nodes`);
+  };
   const inline = (content: unknown): void => {
     checkList(content, "the content of a block");
     for (const node of content as Inline[]) {
+      tick();
       if (typeof node !== "object" || node === null || !["text", "break", "image", "footnote"].includes(node.type)) throw new FormatError("INVALID_MODEL", "an inline node is not text, a break, an image, or a footnote");
       if (node.type === "text") checkRun(node);
       if (node.type === "image") sniffImage(node.data);
       if (node.type === "footnote") {
-        inline(node.content);
-        if ((node.content as Inline[]).some((n) => n.type !== "text" && n.type !== "break")) throw new FormatError("INVALID_MODEL", "a footnote holds text and line breaks only");
+        checkList(node.content, "the content of a footnote");
+        for (const n of node.content as Inline[]) {
+          tick();
+          if (n?.type !== "text" && n?.type !== "break") throw new FormatError("INVALID_MODEL", "a footnote holds text and line breaks only");
+          if (n.type === "text") checkRun(n);
+        }
       }
     }
   };
@@ -656,11 +697,13 @@ function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: n
     checkList(l?.items, "the items of a list");
     if (d > Math.floor(caps.maxXmlDepth / 3)) throw new FormatError("INVALID_MODEL", "lists or tables nest too deep");
     for (const item of l.items) {
+      tick();
       inline(item?.content);
       if (item.sublist) list(item.sublist, d + 1);
     }
   };
   for (const block of blocks as Block[]) {
+    tick();
     if (typeof block !== "object" || block === null) throw new FormatError("INVALID_MODEL", "a block must be an object");
     if (block.type === "heading") {
       headingLevel(block.level);
@@ -681,7 +724,7 @@ function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: n
 }
 
 function writeText(doc: TextDoc, pdf: Pdf): void {
-  checkBlocks(doc?.blocks, pdf.caps, 0, { n: 0 });
+  checkBlocks(doc?.blocks, pdf.caps, 0, { n: 0, work: 0 });
   if (doc.title !== undefined && typeof doc.title !== "string") throw new FormatError("INVALID_MODEL", "the title of a document must be a string");
   // The text is charged as it is encoded. Image bytes are not text: they count against the output size.
   if (textLength(doc.blocks) > pdf.caps.maxTextChars + pdf.caps.maxTotalBytes) throw new FormatError("LIMIT_EXCEEDED", "the document is larger than the limits allow");
