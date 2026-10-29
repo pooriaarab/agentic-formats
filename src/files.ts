@@ -1,5 +1,6 @@
 import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, realpathSync, statSync, writeSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { FormatError, withLimits, type Limits } from "./limits.js";
 
 /** The caller asked for something the tool refuses: a bad path, an overwrite, an unknown extension. */
@@ -37,6 +38,10 @@ export function pathPolicyFromEnv(env: NodeJS.ProcessEnv, cwd: string): PathPoli
   if (anyPath === "1") return { anyPath: true };
   const folder = resolve(cwd, root ?? ".");
   if (!existsSync(folder) || !statSync(folder).isDirectory()) throw new UsageError(`"${folder}" is not a folder`);
+  // Some clients start a server in `/` or in the home folder. As a default that is the whole disk or every personal file, so a person must name a folder.
+  if (root === undefined && (folder === parse(folder).root || folder === resolve(homedir()))) {
+    throw new UsageError(`the working folder "${folder}" is the filesystem root or the home folder; set AGENTIC_FORMATS_ROOT to the folder the tools may use`);
+  }
   return { folder };
 }
 

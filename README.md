@@ -7,7 +7,7 @@
 
 Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.
 
-> **Safe by default.** The MCP server reads and writes only the folder it starts in. An agent
+> **Safe by default.** The MCP server reads and writes only the folder it starts in. It refuses to start in `/` or in your home folder: set `AGENTIC_FORMATS_ROOT` to the folder the tools may use. An agent
 > that reads untrusted text must not reach your other files. To use another folder, set
 > `AGENTIC_FORMATS_ROOT`. To allow any path, set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`. An empty
 > variable is an error.

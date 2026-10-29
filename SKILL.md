@@ -30,7 +30,7 @@ Output is JSON on stdout. A refusal exits with 1 and prints the reason on stderr
 ## Use the MCP server
 
 Start it with `agentic-formats mcp`. Call `inspect_file`, `read_model`, or `convert_file`.
-The tools read and write only the working folder of the server. Set `AGENTIC_FORMATS_ROOT` to
+The tools read and write only the working folder of the server, which is never `/` or the home folder (the server refuses to start there). Set `AGENTIC_FORMATS_ROOT` to
 use another folder. Set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1` only when the user asked for any path.
 A path outside the folder returns an "outside the allowed folder" error: do not look for a way around it.
 

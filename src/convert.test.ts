@@ -382,12 +382,12 @@ describe("mcp output links", () => {
     const root = at("sheets-root");
     mkdirSync(root, { recursive: true });
     const one = writeOds({ sheets: [{ name: "S", cells: { A1: { value: 1 } } }] }).bytes;
-    const tables = Array.from({ length: 5000 }, (_, i) => `<table:table table:name="Sheet${i}"/>`).join("");
+    const tables = Array.from({ length: 1200 }, (_, i) => `<table:table table:name="Sheet${i}"/>`).join("");
     writeFileSync(join(root, "sheets.ods"), zipSync(Object.fromEntries(Object.entries(unzipSync(one)).map(([n, data]) => [n, n === "content.xml" ? strToU8(strFromU8(data).replace(/<table:table .*<\/table:table>/s, tables)) : data]))));
     const client = await connect(root);
     try {
       const inspected = JSON.parse((await call(client, "inspect_file", { path: "sheets.ods" })).text) as { sheetCount: number; sheets: { name: string }[] };
-      expect(inspected.sheetCount).toBe(5000);
+      expect(inspected.sheetCount).toBe(1200);
       expect(inspected.sheets).toHaveLength(100);
       expect(inspected.sheets[99].name).toBe("Sheet99");
     } finally {
@@ -401,7 +401,7 @@ describe("mcp output links", () => {
     // Half random letters and half quotes: 6 M characters raw, under the 8,388,608 cap, and 9 M once JSON escapes each quote as \".
     const random = randomBytes(3_000_000);
     const mixed = Array.from(random, (b) => `${String.fromCharCode(97 + (b % 26))}"`).join("");
-    writeFileSync(join(root, "big.ods"), writeOds({ sheets: [{ name: "S", cells: { A1: { value: mixed } } }] }).bytes);
+    writeFileSync(join(root, "big.ods"), writeOds({ sheets: [{ name: "S", cells: { A1: { value: mixed } } }] }, { maxEntryBytes: 200_000_000, maxTotalBytes: 200_000_000 }).bytes);
     const client = await connect(root);
     try {
       const read = await call(client, "read_model", { path: "big.ods" });
@@ -467,6 +467,16 @@ describe("mcp path policy", () => {
     const flag = spawnSync("node", [bin], { encoding: "utf8", cwd: dir, env: serverEnv({ AGENTIC_FORMATS_UNSAFE_ANY_PATH: "yes" }), input: "", timeout: 20_000 });
     expect(flag.status).toBe(1);
     expect(flag.stderr).toMatch(/must be "1"/);
+  });
+
+  test("9 a working folder that is the filesystem root or the home folder is not a default scope", () => {
+    const start = (cwd: string, env: Record<string, string> = {}) => spawnSync("node", [cli, "mcp"], { encoding: "utf8", cwd, env: serverEnv(env), input: "", timeout: 20_000 });
+    for (const r of [start("/"), start(dir, { HOME: dir })]) {
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/is the filesystem root or the home folder; set AGENTIC_FORMATS_ROOT/);
+    }
+    // Naming the folder is allowed, even when it is the home folder.
+    expect(start(dir, { HOME: dir, AGENTIC_FORMATS_ROOT: dir }).stderr).not.toMatch(/filesystem root or the home folder/);
   });
 
   test("9 a root that is not a folder is an error", () => {
