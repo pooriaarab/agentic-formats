@@ -436,4 +436,34 @@ describe("PDF writer, review round 4", () => {
     const deck = { width: 100, height: 100, slides: [{ shapes: [{ type: "textbox" as const, frame: { x: 0, y: 0, width: 50, height: 2 }, paragraphs: [[]] }] }] };
     expect(writePdf(deck).warnings).toEqual([]);
   });
+
+  test("4 palette and sub-byte gray PNGs are embedded", () => {
+    const png = (ctype: number, depth: number, w: number, h: number, rows: number[], plte?: number[]) => {
+      const chunk = (type: string, body: Uint8Array) => {
+        const b = new Uint8Array(12 + body.length);
+        new DataView(b.buffer).setUint32(0, body.length);
+        b.set([...type].map((c) => c.charCodeAt(0)), 4);
+        b.set(body, 8);
+        return b;
+      };
+      const ihdr = new Uint8Array(13);
+      new DataView(ihdr.buffer).setUint32(0, w);
+      new DataView(ihdr.buffer).setUint32(4, h);
+      ihdr.set([depth, ctype, 0, 0, 0], 8);
+      return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk("IHDR", ihdr), ...(plte ? chunk("PLTE", Uint8Array.from(plte)) : []), ...chunk("IDAT", zlibSync(Uint8Array.from(rows))), ...chunk("IEND", new Uint8Array())]);
+    };
+    const doc = (data: Uint8Array) => ({ blocks: [{ type: "paragraph" as const, content: [{ type: "image" as const, data, mime: "image/png" as const }] }] });
+    const palette = writePdf(doc(png(3, 8, 2, 2, [0, 0, 1, 0, 1, 0], [255, 0, 0, 0, 0, 255])));
+    expect(palette.warnings).toEqual([]);
+    expect(latin(palette.bytes)).toContain("/Indexed /DeviceRGB 1");
+    const bit = writePdf(doc(png(0, 1, 16, 1, [0, 0xaa, 0x55])));
+    expect(bit.warnings).toEqual([]);
+    expect(latin(bit.bytes)).toContain("/BitsPerComponent 1");
+  });
+
+  test("7 many small styled runs are stopped by the output cap", () => {
+    const runs = Array.from({ length: 20_000 }, (_, i) => ({ type: "text" as const, text: "ab"[i % 2], marks: [(["bold", "underline", "strike"] as const)[i % 3]] }));
+    expect(() => writePdf({ blocks: [{ type: "paragraph", content: runs }] }, { maxTotalBytes: 100_000 })).toThrow(FormatError);
+  });
 });
+

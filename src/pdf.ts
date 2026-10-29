@@ -52,11 +52,24 @@ const num = (x: number): string => {
 const rgb = (hex: string): string => [1, 3, 5].map((i) => num(parseInt(hex.slice(i, i + 2), 16) / 255)).join(" ");
 
 class Page {
-  ops: string[] = [];
+  private list: string[] = [];
+  /** The page operators. Each one counts against the size cap as it is added, before the stream is compressed. */
+  ops = {
+    push: (op: string): void => {
+      this.charge(op.length + 1);
+      this.list.push(op);
+    },
+    join: (sep: string): string => this.list.join(sep),
+  };
   annots: string[] = [];
+  annot(a: string): void {
+    this.charge(a.length + 1);
+    this.annots.push(a);
+  }
   constructor(
     readonly width: number,
     readonly height: number,
+    private readonly charge: (n: number) => void,
   ) {}
 }
 
@@ -77,7 +90,9 @@ class Pdf {
   bytes: (n: number) => void;
   /** Bytes of pixels unpacked so far, for every image together. */
   decoded: (n: number) => void;
+  opBytes: (n: number) => void;
   constructor(readonly caps: Limits) {
+    this.opBytes = capped(caps.maxTotalBytes, `the page operators pass ${caps.maxTotalBytes} bytes`);
     this.decoded = capped(caps.maxTotalBytes, `the images unpack to more than ${caps.maxTotalBytes} bytes`);
     this.charge = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} characters of text`);
     this.bytes = capped(caps.maxTotalBytes, `the PDF passes ${caps.maxTotalBytes} bytes while it is written`);
@@ -98,7 +113,7 @@ class Pdf {
   }
   newPage(width: number, height: number): Page {
     if (this.pages.length >= this.caps.maxEntries) throw new FormatError("LIMIT_EXCEEDED", `the PDF has more than ${this.caps.maxEntries} pages`);
-    const page = new Page(width, height);
+    const page = new Page(width, height, this.opBytes);
     this.pages.push(page);
     return page;
   }
@@ -195,9 +210,9 @@ class Pdf {
       if (unpacked > this.caps.maxEntryBytes) throw new FormatError("LIMIT_EXCEEDED", "an image is larger than the entry limit when unpacked");
       this.decoded(unpacked);
       // Unpack it here, bounded, so a damaged or bomb stream is reported and not handed to the viewer.
-      const rows = inflateUpTo(joined, unpacked);
       const stride = 1 + Math.ceil((width * colors * depth) / 8);
-      if (!rows || rows.length !== unpacked) return skip("is a PNG with damaged pixels");
+      const rows = inflateUpTo(joined, height * stride);
+      if (!rows || rows.length !== height * stride) return skip("is a PNG with damaged pixels");
       for (let y = 0; y < height; y++) if (rows[y * stride] > 4) return skip("is a PNG with damaged pixels");
       const space = ctype === 3 ? `[/Indexed /DeviceRGB ${Math.floor(palette!.length / 3) - 1} <${[...palette!.subarray(0, Math.floor(palette!.length / 3) * 3)].map((b) => b.toString(16).padStart(2, "0")).join("")}>]` : ctype === 2 ? "/DeviceRGB" : "/DeviceGray";
       this.set(id, `<</Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace ${space} /BitsPerComponent ${depth} /Filter /FlateDecode /DecodeParms <</Predictor 15 /Colors ${colors} /BitsPerComponent ${depth} /Columns ${width}>>>>`, joined);
@@ -451,7 +466,7 @@ function drawLine(page: Page, line: Line, size: number, x: number, y: number): v
     }
     if (seg.underline) page.ops.push(`0.5 w ${seg.href ? "0 0 0.8" : "0 0 0"} RG ${num(cx)} ${num(y - size * 0.12)} m ${num(cx + seg.width)} ${num(y - size * 0.12)} l S`);
     if (seg.strike) page.ops.push(`0.5 w 0 0 0 RG ${num(cx)} ${num(y + size * 0.3)} m ${num(cx + seg.width)} ${num(y + size * 0.3)} l S`);
-    if (seg.href) page.annots.push(`<</Type /Annot /Subtype /Link /Rect [${num(cx)} ${num(y - size * 0.2)} ${num(cx + seg.width)} ${num(y + size * 0.85)}] /Border [0 0 0] /A <</S /URI /URI ${lit(seg.href)}>>>>`);
+    if (seg.href) page.annot(`<</Type /Annot /Subtype /Link /Rect [${num(cx)} ${num(y - size * 0.2)} ${num(cx + seg.width)} ${num(y + size * 0.85)}] /Border [0 0 0] /A <</S /URI /URI ${lit(seg.href)}>>>>`);
     cx += seg.width;
   }
 }
