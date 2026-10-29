@@ -28,66 +28,10 @@ import { afterAll, describe, expect, test } from "vitest";
 import { FormatError } from "./limits.js";
 import { normalizeTextDoc, type Block, type TextDoc } from "./model.js";
 import { readOdt, writeOdt } from "./odt.js";
+import { PNG, textFixture as fixture } from "./testing/fixtures.js";
 import { LibreOffice, hasLibreOffice, libreOfficeRequired, sha256, writeArtifact, type RoundTripRecord } from "./testing/libreoffice.js";
 import { writeZip } from "./zip.js";
 import { withLimits } from "./limits.js";
-
-const PNG = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
-
-const fixture: TextDoc = {
-  title: "Quarterly notes & <plans>",
-  blocks: [
-    { type: "heading", level: 1, content: [{ type: "text", text: "Plan" }] },
-    { type: "heading", level: 3, content: [{ type: "text", text: "Details" }] },
-    {
-      type: "paragraph",
-      content: [
-        { type: "text", text: "Plain, " },
-        { type: "text", text: "bold", marks: ["bold"] },
-        { type: "text", text: " " },
-        { type: "text", text: "italic and underline", marks: ["italic", "underline"] },
-        { type: "text", text: " " },
-        { type: "text", text: "struck", marks: ["strike"] },
-        { type: "text", text: " " },
-        { type: "text", text: "code()", marks: ["code"] },
-        { type: "text", text: " x" },
-        { type: "text", text: "2", marks: ["superscript"] },
-        { type: "text", text: " H" },
-        { type: "text", text: "2", marks: ["subscript"] },
-        { type: "text", text: "O, " },
-        { type: "text", text: "a link", href: "https://example.org/a?b=1&c=2" },
-        { type: "text", text: " and " },
-        { type: "text", text: "bold link", marks: ["bold"], href: "mailto:team@example.org" },
-        { type: "text", text: "." },
-      ],
-    },
-    { type: "paragraph", content: [{ type: "text", text: "  lead, a    gap,\ttab" }, { type: "break" }, { type: "text", text: "after break  " }] },
-    { type: "paragraph", content: [{ type: "text", text: "Entities: 5 < 6 & \"quoted\" 'single' ünï ✓ 𝒳" }] },
-    {
-      type: "list",
-      ordered: false,
-      items: [
-        { content: [{ type: "text", text: "one" }] },
-        { content: [{ type: "text", text: "two" }], sublist: { type: "list", ordered: true, items: [{ content: [{ type: "text", text: "two-a" }] }, { content: [{ type: "text", text: "two-b" }], sublist: { type: "list", ordered: false, items: [{ content: [{ type: "text", text: "deep" }] }] } }] } },
-      ],
-    },
-    { type: "list", ordered: true, items: [{ content: [{ type: "text", text: "first" }] }, { content: [{ type: "text", text: "second", marks: ["bold"] }] }] },
-    {
-      type: "table",
-      header: true,
-      rows: [
-        [[{ type: "paragraph", content: [{ type: "text", text: "Name" }] }], [{ type: "paragraph", content: [{ type: "text", text: "Qty" }] }]],
-        [[{ type: "paragraph", content: [{ type: "text", text: "Apples" }] }], []],
-        [[{ type: "paragraph", content: [{ type: "text", text: "Two" }] }, { type: "paragraph", content: [{ type: "text", text: "paragraphs" }] }], [{ type: "paragraph", content: [{ type: "text", text: "7", marks: ["bold"] }] }]],
-      ],
-    },
-    { type: "paragraph", content: [{ type: "text", text: "Image: " }, { type: "image", data: PNG, mime: "image/png", alt: "a red dot", width: 72, height: 36 }, { type: "text", text: " ends." }] },
-    {
-      type: "paragraph",
-      content: [{ type: "text", text: "Claim" }, { type: "footnote", content: [{ type: "text", text: "See " }, { type: "text", text: "source", marks: ["italic"] }, { type: "break" }, { type: "text", text: "page 4." }] }, { type: "text", text: " holds." }],
-    },
-  ],
-};
 
 const parts = (bytes: Uint8Array) => unzipSync(bytes);
 const wellFormed = (xml: string): void => {
@@ -426,6 +370,16 @@ describe("hostile files", () => {
     const started = Date.now();
     limitExceeded(() => writeOdt({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "\n".repeat(8_000_000) }] }] }));
     expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("15 a list item that wraps hundreds of thousands of items grafts without a stack overflow", { timeout: 60_000 }, () => {
+    const item = (inner: string) => `<text:list-item>${inner}</text:list-item>`;
+    const list = (items: string) => `<text:list>${items}</text:list>`;
+    const first = list(item(`<text:p>a</text:p>${list(item("<text:p>b</text:p>"))}`));
+    const rest = Array.from({ length: 300_000 }, (_, i) => item(`<text:p>${i}</text:p>`)).join("");
+    const second = list(item(list(item(list(item("<text:p>d</text:p>"))) + rest)));
+    const read = readOdt(odt(wrap(first + second)));
+    expect(read.model.blocks.length).toBeGreaterThan(0);
   });
 
   test("15 a run of newlines is charged as the XML it becomes, before the next piece is made", () => {

@@ -20,7 +20,7 @@ export interface Limits {
   maxXmlElements: number;
   /** Number of cells in a workbook, or table cells in a text document. Repeat counts count in full. */
   maxCells: number;
-  /** Characters of text that a file repeats: cells that share one string, or table cells that repeat. Each extra copy counts. */
+  /** Characters of cell or run text, with every copy counted. Copies of one string share memory but not the output. */
   maxTextChars: number;
   /** Length of a style's parent chain. */
   maxStyleDepth: number;

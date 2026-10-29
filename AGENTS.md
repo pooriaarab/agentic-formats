@@ -11,6 +11,7 @@ and never write zip or XML code.
 ## Faces
 
 - SDK: `import { readOdt, writeOdt } from "agentic-formats"`. Each returns `{ model|bytes, warnings }`.
+  Documents also use `readDocx` and `writeDocx`.
   Spreadsheets: `readOds`, `writeOds`, `readXlsx`, `writeXlsx` with a `Workbook`.
 - CLI: `npx agentic-formats --help`.
 - MCP: `npx agentic-formats mcp`.

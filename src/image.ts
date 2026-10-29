@@ -1,3 +1,4 @@
+import { FormatError } from "./limits.js";
 import type { ImageMime } from "./model.js";
 
 export interface SniffedImage {
@@ -13,6 +14,7 @@ export interface SniffedImage {
  * returns undefined. SVG is not on the list: it can carry script.
  */
 export function sniffImage(b: Uint8Array): SniffedImage | undefined {
+  if (!(b instanceof Uint8Array)) throw new FormatError("INVALID_MODEL", "image data must be a Uint8Array");
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   if (b.length >= 24 && v.getUint32(0) === 0x89504e47 && v.getUint32(4) === 0x0d0a1a0a) {
     return { mime: "image/png", ext: "png", width: v.getUint32(16), height: v.getUint32(20) };
