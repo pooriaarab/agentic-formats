@@ -11,6 +11,16 @@ export type Kind = "text" | "sheet" | "deck";
 export type Format = "odt" | "docx" | "ods" | "xlsx" | "odp" | "pptx";
 
 /** A file read into its neutral model. `kind` tells which model it is. */
+/** The most warnings, and the longest one, that a file reports to its caller. A hostile file can name its own warnings. */
+const MAX_WARNINGS = 100;
+const MAX_WARNING_CHARS = 300;
+
+/** Keep the first warnings and cut the long ones, so a hostile file cannot flood a reply with text it chose. */
+export function capWarnings(warnings: string[]): string[] {
+  const shown = warnings.slice(0, MAX_WARNINGS).map((w) => (w.length > MAX_WARNING_CHARS ? `${w.slice(0, MAX_WARNING_CHARS)}...` : w));
+  return warnings.length > MAX_WARNINGS ? [...shown, `${warnings.length - MAX_WARNINGS} more warnings were left out`] : shown;
+}
+
 export type Loaded = { kind: "text"; model: TextDoc; warnings: string[] } | { kind: "sheet"; model: Workbook; warnings: string[] } | { kind: "deck"; model: Deck; warnings: string[] };
 
 export const FORMATS: readonly Format[] = ["odt", "docx", "ods", "xlsx", "odp", "pptx"];
@@ -28,17 +38,17 @@ export function load(bytes: Uint8Array, format: Format, limits?: Partial<Limits>
     case "odt":
     case "docx": {
       const { model, warnings } = (format === "odt" ? readOdt : readDocx)(bytes, limits);
-      return { kind: "text", model, warnings };
+      return { kind: "text", model, warnings: capWarnings(warnings) };
     }
     case "ods":
     case "xlsx": {
       const { model, warnings } = (format === "ods" ? readOds : readXlsx)(bytes, limits);
-      return { kind: "sheet", model, warnings };
+      return { kind: "sheet", model, warnings: capWarnings(warnings) };
     }
     case "odp":
     case "pptx": {
       const { model, warnings } = (format === "odp" ? readOdp : readPptx)(bytes, limits);
-      return { kind: "deck", model, warnings };
+      return { kind: "deck", model, warnings: capWarnings(warnings) };
     }
   }
 }
@@ -67,7 +77,7 @@ export function convert(bytes: Uint8Array, from: Format, to: Format, limits?: Pa
   const caps = withLimits(limits);
   const loaded = load(bytes, from, caps);
   const written = save(loaded, to, caps);
-  return { from, to, bytes: written.bytes, warnings: [...loaded.warnings, ...written.warnings] };
+  return { from, to, bytes: written.bytes, warnings: capWarnings([...loaded.warnings, ...written.warnings]) };
 }
 
 const countInline = (content: Inline[], into: Record<string, number>): number => {
@@ -89,8 +99,10 @@ const countInline = (content: Inline[], into: Record<string, number>): number =>
 export function inspect(bytes: Uint8Array, format: Format, limits?: Partial<Limits>): Record<string, unknown> {
   const loaded = load(bytes, format, limits);
   const base = { format, kind: loaded.kind, warnings: loaded.warnings };
+  // A sheet name comes from the file and has no length limit when it is read.
+  const shortName = (name: string) => (name.length > MAX_WARNING_CHARS ? `${name.slice(0, MAX_WARNING_CHARS)}...` : name);
   if (loaded.kind === "sheet") {
-    return { ...base, sheets: loaded.model.sheets.map((s) => ({ name: s.name, cells: Object.keys(s.cells).length, formulas: Object.values(s.cells).filter((c) => c.formula !== undefined).length })) };
+    return { ...base, sheets: loaded.model.sheets.map((s) => ({ name: shortName(s.name), cells: Object.keys(s.cells).length, formulas: Object.values(s.cells).filter((c) => c.formula !== undefined).length })) };
   }
   if (loaded.kind === "deck") {
     const shapes = { textbox: 0, shape: 0, picture: 0 };
@@ -128,8 +140,10 @@ export const MAX_MODEL_JSON = 8 * 1024 * 1024;
 export function modelJson(model: unknown, max = MAX_MODEL_JSON): string {
   let size = 0;
   return JSON.stringify(model, (key, value: unknown) => {
-    size += key.length + (typeof value === "string" ? JSON.stringify(value).length : String(value).length);
+    // Image bytes are replaced by their size, so count the replacement and never turn the bytes into a string.
+    if (value instanceof Uint8Array) return { bytes: value.length };
+    size += key.length + (typeof value === "string" ? JSON.stringify(value).length : typeof value === "object" ? 2 : String(value).length);
     if (size > max) throw new FormatError("LIMIT_EXCEEDED", `the model is larger than ${max} characters as JSON; use inspect_file for counts`);
-    return value instanceof Uint8Array ? { bytes: value.length } : value;
+    return value;
   });
 }

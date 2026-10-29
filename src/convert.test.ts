@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { zipSync } from "fflate";
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { load } from "./convert.js";
 import { writeDocx } from "./docx.js";
@@ -169,7 +169,7 @@ describe("inspect", () => {
       kind: "text",
       title: "Quarterly notes & <plans>",
       blocks: { heading: 2, paragraph: 12, list: 2, table: 1 },
-      links: 2,
+      links: 3,
       images: 1,
       footnotes: 1,
       warnings: [],
@@ -319,10 +319,38 @@ describe("mcp output links", () => {
     }
   });
 
+  test("9 a hostile file cannot flood a reply with the text of its own warnings or sheet names", { timeout: 120_000 }, async () => {
+    const root = at("warn-root");
+    mkdirSync(root, { recursive: true });
+    const noise = (n: number) => randomBytes(n).toString("base64").replace(/[^a-z]/gi, "").slice(0, n);
+    const repack = (bytes: Uint8Array, name: string, change: (xml: string) => string) =>
+      zipSync(Object.fromEntries(Object.entries(unzipSync(bytes)).map(([n, data]) => [n, n === name ? strToU8(change(strFromU8(data))) : data])));
+    const deck = writePptx({ width: 720, height: 405, slides: [{ shapes: [] }] }).bytes;
+    const shape = `<p:sp><p:nvSpPr><p:cNvPr id="9" name="s"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1" cy="1"/></a:xfrm><a:prstGeom prst="${noise(1_000_000)}"/></p:spPr></p:sp>`;
+    writeFileSync(join(root, "warn.pptx"), repack(deck, "ppt/slides/slide1.xml", (x) => x.replace("</p:spTree>", `${shape}</p:spTree>`)));
+    writeFileSync(join(root, "name.ods"), repack(writeOds({ sheets: [{ name: "S", cells: { A1: { value: 1 } } }] }).bytes, "content.xml", (x) => x.replace('table:name="S"', `table:name="${noise(1_000_000)}"`)));
+    const client = await connect(root);
+    try {
+      for (const path of ["warn.pptx", "name.ods"]) {
+        const inspected = await call(client, "inspect_file", { path });
+        expect(inspected.isError, path).toBe(false);
+        expect(inspected.text.length, path).toBeLessThan(5000);
+        const model = await call(client, "convert_file", { input: path, output: path.replace(/\.\w+$/, path.endsWith("pptx") ? ".odp" : ".xlsx") });
+        expect(model.text.length, path).toBeLessThan(5000);
+      }
+      expect(JSON.parse((await call(client, "inspect_file", { path: "warn.pptx" })).text).warnings[0]).toMatch(/\.\.\.$/);
+    } finally {
+      await client.close();
+    }
+  });
+
   test("9 read_model refuses a model past the reply cap and says where the counts are", { timeout: 120_000 }, async () => {
     const root = at("big-root");
     mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, "big.ods"), writeOds({ sheets: [{ name: "S", cells: { A1: { value: randomBytes(5_900_000).toString("base64") }, ...Object.fromEntries(Array.from({ length: 30_000 }, (_, i) => [`B${i + 1}`, { value: "v" }])) } }] }).bytes);
+    // Half random letters and half quotes: 6 M characters raw, under the 8,388,608 cap, and 9 M once JSON escapes each quote as \".
+    const random = randomBytes(3_000_000);
+    const mixed = Array.from(random, (b) => `${String.fromCharCode(97 + (b % 26))}"`).join("");
+    writeFileSync(join(root, "big.ods"), writeOds({ sheets: [{ name: "S", cells: { A1: { value: mixed } } }] }).bytes);
     const client = await connect(root);
     try {
       const read = await call(client, "read_model", { path: "big.ods" });

@@ -114,8 +114,10 @@ export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean,
 
 /** The text for an error the caller can fix, or undefined for any other error. */
 export function describeError(error: unknown): string | undefined {
-  if (error instanceof FormatError) return `${error.code}: ${error.message}`;
-  if (error instanceof UsageError) return `UsageError: ${error.message}`;
+  // A message can quote a name from the file, which has no length limit.
+  const short = (message: string) => (message.length > 400 ? `${message.slice(0, 400)}...` : message);
+  if (error instanceof FormatError) return `${error.code}: ${short(error.message)}`;
+  if (error instanceof UsageError) return `UsageError: ${short(error.message)}`;
   if ((error as NodeJS.ErrnoException).code === "ENOENT") return "UsageError: file not found";
   return undefined;
 }
