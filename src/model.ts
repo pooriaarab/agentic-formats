@@ -102,8 +102,20 @@ const sameStyle = (a: TextRun, b: TextRun): boolean => a.href === b.href && (a.m
 /** The marks of `a` and `b` together, each once, in the canonical order. Seven entries at most, however many styles a file stacks. */
 export const mergeMarks = (a: readonly Mark[], b: readonly Mark[]): Mark[] => MARKS.filter((m) => a.includes(m) || b.includes(m));
 
+/** The size of inline content as a writer would repeat it: text and link targets, image bytes and descriptions. */
 const inlineLength = (content: Inline[]): number =>
-  content.reduce((n, node) => n + (node.type === "text" ? node.text.length : node.type === "footnote" ? inlineLength(node.content) : node.type === "image" ? node.data.length : 1), 0);
+  content.reduce(
+    (n, node) =>
+      n +
+      (node.type === "text"
+        ? node.text.length + (node.href?.length ?? 0)
+        : node.type === "footnote"
+          ? inlineLength(node.content)
+          : node.type === "image"
+            ? node.data.length + (node.alt?.length ?? 0)
+            : 1),
+    0,
+  );
 
 /** Characters of text in blocks, and bytes of images, counted as they are laid out: a row that appears twice counts twice. */
 export function textLength(blocks: Block[]): number {

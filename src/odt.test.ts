@@ -312,6 +312,20 @@ describe("hostile files", () => {
     limitExceeded(() => writeOdt({ blocks: [nest(40)] }, withLimits({ maxTotalBytes: 1_000_000 })));
   });
 
+  test("17 a long link or image description in a repeated table cell counts once for each copy", () => {
+    const link = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="1000"><text:p><text:a xlink:href="${"a".repeat(100_000)}">x</text:a></text:p></table:table-cell></table:table-row></table:table>`;
+    limitExceeded(() => readOdt(odt(wrap(link))));
+    const alt = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="1000"><text:p><draw:frame><draw:image xlink:href="Pictures/a.png"/><svg:title xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0">${"d".repeat(100_000)}</svg:title></draw:frame></text:p></table:table-cell></table:table-row></table:table>`;
+    limitExceeded(() => readOdt(odt(wrap(alt), "application/vnd.oasis.opendocument.text", [{ name: "Pictures/a.png", data: PNG }])));
+  });
+
+  test("17 a length attribute of a million digits is not matched, and is read as no length", () => {
+    const frame = (width: string) => wrap(`<text:p><draw:frame svg:width="${width}" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:image xlink:href="Pictures/a.png"/></draw:frame></text:p>`);
+    const started = Date.now();
+    expect(readOdt(odt(frame("9".repeat(900_000) + "x"), "application/vnd.oasis.opendocument.text", [{ name: "Pictures/a.png", data: PNG }])).model.blocks).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   test("15 a section with many blocks, and a table with many rows, fail or pass as a FormatError, never a stack overflow", { timeout: 60_000 }, () => {
     const paragraphs = Array.from({ length: 200_000 }, (_, i) => `<text:p>${i}</text:p>`).join("");
     expect(readOdt(odt(wrap(`<text:section>${paragraphs}</text:section>`))).model.blocks).toHaveLength(200_000);

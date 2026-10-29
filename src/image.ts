@@ -57,7 +57,10 @@ const UNIT_POINTS: Record<string, number> = { cm: 72 / 2.54, mm: 72 / 25.4, in: 
 
 /** A length such as `2.5cm` or `10pt` in points, to 0.1 point. Anything else returns undefined. */
 export function lengthPt(value: string | undefined): number | undefined {
-  const found = /^(-?[0-9]*\.?[0-9]+)(cm|mm|in|pt|pc|px)$/.exec((value ?? "").trim());
+  const text = (value ?? "").trim();
+  // A real length is a few characters. The pattern backtracks on a long run of digits, so a long value is not matched at all.
+  if (text.length > 40) return undefined;
+  const found = /^(-?[0-9]*\.?[0-9]+)(cm|mm|in|pt|pc|px)$/.exec(text);
   if (!found) return undefined;
   const points = Number(found[1]) * UNIT_POINTS[found[2]];
   return Number.isFinite(points) ? Math.round(points * 10) / 10 : undefined;
