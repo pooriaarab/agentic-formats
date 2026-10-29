@@ -7,8 +7,8 @@
 
 Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.
 
-> Status: early. The neutral models, the input guards, ODT, DOCX, ODS, and XLSX work. The other
-> formats land next, one family per release. The package is not on npm yet.
+> Status: early. The neutral models, the input guards, and all six formats work: ODT, DOCX, ODS,
+> XLSX, ODP, and PPTX. The package is not on npm yet.
 
 ## Install
 
@@ -38,6 +38,10 @@ npm install agentic-formats
   Formulas use A1 notation in the model (`SUM(A1:B2,Sheet2!C3)`). The ODS code converts them to
   OpenFormula and back. Dates are serial numbers with the `yyyy-mm-dd` format. LibreOffice
   round trips cover both formats and the trip from one to the other.
+- **ODP and PPTX.** `readOdp`, `writeOdp`, `readPptx`, and `writePptx` handle slides with text
+  boxes (paragraphs with marks and links), rectangles, ellipses, lines, pictures, and notes, on a
+  slide of any size. A PPTX placeholder with no position of its own takes it from its layout, then
+  its master. LibreOffice round trips cover both formats and the trip from one to the other.
 - **Normalizing.** `normalizeTextDoc` merges equal runs, so you can compare two documents.
 
 ```ts
@@ -53,7 +57,6 @@ try {
 
 ## Planned
 
-- ODP and PPTX slide decks.
 - A CLI (`agentic-formats convert in.odt out.docx`) and MCP tools.
 - Round-trip tests against LibreOffice output.
 
@@ -67,6 +70,10 @@ try {
   A shared XLSX formula is read as its value. Time cells read as a fraction of a day.
 - ODT has no support for merged cells, comments, tracked changes, text boxes, or styles beyond the
   marks in the model. A reader lists each one it skips in `warnings`.
+- Slides: no groups, charts, tables, animations, themes, or master slide content. A shape holds
+  no text. A shape that holds text reads as a text box. A line runs from the top left of its frame
+  to the bottom right. The writers add a blank layout and a plain master. PPTX is checked against
+  LibreOffice, not PowerPoint.
 - A link run carries no underline mark: a viewer underlines a link by itself. A footnote does not
   start with a space. Two tables in a row merge in Word.
 - LibreOffice keeps no nested list of another kind when it saves DOCX. The sublist takes the kind

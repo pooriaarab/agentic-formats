@@ -1,4 +1,4 @@
-import type { TextDoc } from "../model.js";
+import type { Deck, TextDoc, TextRun } from "../model.js";
 
 /** A 1x1 PNG. */
 export const PNG = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
@@ -57,5 +57,37 @@ export const textFixture: TextDoc = {
       type: "paragraph",
       content: [{ type: "text", text: "Claim" }, { type: "footnote", content: [{ type: "text", text: "See " }, { type: "text", text: "source", marks: ["italic"] }, { type: "break" }, { type: "text", text: "page 4, " }, { type: "text", text: "online", href: "https://example.org/note" }, { type: "text", text: "." }] }, { type: "text", text: " holds." }],
     },
+  ],
+};
+
+const run = (text: string, extra: Partial<TextRun> = {}): TextRun => ({ type: "text", text, ...extra });
+
+/** A deck with every shape kind, marks, a link, a picture, and notes. Sizes are in points. */
+export const deckFixture: Deck = {
+  width: 720,
+  height: 405,
+  slides: [
+    {
+      shapes: [
+        { type: "textbox", frame: { x: 36, y: 24, width: 648, height: 60 }, paragraphs: [[run("Quarterly "), run("plan", { marks: ["bold"] }), run(" & "), run("review", { marks: ["italic", "underline"] })]] },
+        {
+          type: "textbox",
+          frame: { x: 36, y: 100, width: 400, height: 120 },
+          paragraphs: [
+            [run("code()", { marks: ["code"] }), run(" x"), run("2", { marks: ["superscript"] }), run(" H"), run("2", { marks: ["subscript"] }), run("O ", {}), run("a link", { href: "https://example.org/a?b=1&c=2" })],
+            [run("  lead, a    gap,\ttab\nafter break  ")],
+            [],
+            [run("5 < 6 & \"quoted\" 'single' ünï ✓ 𝒳", { marks: ["strike"] })],
+          ],
+        },
+        { type: "shape", kind: "rectangle", frame: { x: 460, y: 100, width: 200, height: 100 }, fill: "#ff0000", stroke: "#000000" },
+        { type: "shape", kind: "ellipse", frame: { x: 460, y: 220, width: 100, height: 100 }, fill: "#00aa55" },
+        { type: "shape", kind: "line", frame: { x: 36, y: 340, width: 300, height: 20 }, stroke: "#0000ff" },
+        { type: "picture", frame: { x: 580, y: 240, width: 72, height: 36 }, data: PNG, mime: "image/png", alt: "a red dot" },
+      ],
+      notes: "Say hello.\nThen the numbers & <plans>.",
+    },
+    { shapes: [] },
+    { shapes: [{ type: "textbox", frame: { x: 72, y: 72, width: 576, height: 40 }, paragraphs: [[run("Last slide")]] }], notes: "One line" },
   ],
 };
