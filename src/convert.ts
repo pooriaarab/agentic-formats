@@ -127,7 +127,7 @@ export function inspect(bytes: Uint8Array, format: Format, limits?: Partial<Limi
     }
   };
   walk(loaded.model.blocks);
-  return { ...base, ...(loaded.model.title ? { title: loaded.model.title } : {}), blocks, characters, ...counts };
+  return { ...base, ...(loaded.model.title ? { title: shortName(loaded.model.title) } : {}), blocks, characters, ...counts };
 }
 
 /** The longest model, in characters of JSON, that a tool hands to an agent. */
@@ -142,7 +142,8 @@ export function modelJson(model: unknown, max = MAX_MODEL_JSON): string {
   return JSON.stringify(model, (key, value: unknown) => {
     // Image bytes are replaced by their size, so count the replacement and never turn the bytes into a string.
     if (value instanceof Uint8Array) return { bytes: value.length };
-    size += key.length + (typeof value === "string" ? JSON.stringify(value).length : typeof value === "object" ? 2 : String(value).length);
+    // A member costs its name, two quotes, a colon, and a comma, besides its value.
+    size += key.length + 4 + (typeof value === "string" ? JSON.stringify(value).length : typeof value === "object" ? 2 : String(value).length);
     if (size > max) throw new FormatError("LIMIT_EXCEEDED", `the model is larger than ${max} characters as JSON; use inspect_file for counts`);
     return value;
   });

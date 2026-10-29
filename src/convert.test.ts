@@ -344,6 +344,40 @@ describe("mcp output links", () => {
     }
   });
 
+  test("9 a long title, a long list of warnings, and a large image cannot flood or fail a reply", { timeout: 120_000 }, async () => {
+    const root = at("title-root");
+    mkdirSync(root, { recursive: true });
+    const noise = (n: number) => randomBytes(n).toString("base64").replace(/[^a-z]/gi, "").slice(0, n);
+    const repack = (bytes: Uint8Array, name: string, change: (xml: string) => string) =>
+      zipSync(Object.fromEntries(Object.entries(unzipSync(bytes)).map(([n, data]) => [n, n === name ? strToU8(change(strFromU8(data))) : data])));
+    writeFileSync(join(root, "title.docx"), repack(writeDocx({ title: "t", blocks: [] }).bytes, "docProps/core.xml", (x) => x.replace("<dc:title>t</dc:title>", `<dc:title>${noise(1_000_000)}</dc:title>`)));
+    writeFileSync(join(root, "title.odt"), repack(writeOdt({ title: "t", blocks: [] }).bytes, "meta.xml", (x) => x.replace("<dc:title>t</dc:title>", `<dc:title>${noise(1_000_000)}</dc:title>`)));
+    const deck = writePptx({ width: 720, height: 405, slides: [{ shapes: [] }] }).bytes;
+    const shapes = Array.from({ length: 500 }, (_, i) => `<p:sp><p:nvSpPr><p:cNvPr id="${i + 9}" name="s"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1" cy="1"/></a:xfrm><a:prstGeom prst="odd${i}"/></p:spPr></p:sp>`).join("");
+    writeFileSync(join(root, "many.pptx"), repack(deck, "ppt/slides/slide1.xml", (x) => x.replace("</p:spTree>", `${shapes}</p:spTree>`)));
+    const photo = new Uint8Array(5_000_000);
+    photo.set(PNG);
+    photo.set(randomBytes(4_999_000), 1000);
+    writeFileSync(join(root, "photo.odt"), writeOdt({ blocks: [{ type: "paragraph", content: [{ type: "image", data: photo, mime: "image/png" }] }] }).bytes);
+    const client = await connect(root);
+    try {
+      for (const path of ["title.docx", "title.odt"]) {
+        const inspected = await call(client, "inspect_file", { path });
+        expect(inspected.isError, path).toBe(false);
+        expect(inspected.text.length, path).toBeLessThan(2000);
+        expect(JSON.parse(inspected.text).title, path).toMatch(/\.\.\.$/);
+      }
+      const many = JSON.parse((await call(client, "inspect_file", { path: "many.pptx" })).text) as { warnings: string[] };
+      expect(many.warnings).toHaveLength(101);
+      expect(many.warnings[100]).toBe("400 more warnings were left out");
+      const read = await call(client, "read_model", { path: "photo.odt" });
+      expect(read.isError).toBe(false);
+      expect(read.text).toContain('"bytes":5000000');
+    } finally {
+      await client.close();
+    }
+  });
+
   test("9 read_model refuses a model past the reply cap and says where the counts are", { timeout: 120_000 }, async () => {
     const root = at("big-root");
     mkdirSync(root, { recursive: true });

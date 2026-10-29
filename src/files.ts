@@ -86,8 +86,9 @@ export function readInput(path: string, limits?: Partial<Limits>): Uint8Array {
 }
 
 /**
- * Write a file. It refuses to replace one unless `overwrite` is true, never replaces the input, never
- * follows a link at the output, and never rewrites a file that has more than one name.
+ * Write a file. It refuses to replace one unless `overwrite` is true, never replaces the input, does not open
+ * a link at the path it is given (the MCP tools resolve a link inside the folder before this call, and refuse one
+ * that leaves it), and never rewrites a file that has more than one name.
  */
 export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean, input?: string): void {
   if (input !== undefined && existsSync(path) && realpathSync(path) === realpathSync(input)) throw new UsageError("the output is the input file");
