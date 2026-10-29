@@ -98,6 +98,7 @@ function runXml(run: TextRun, out: Out): string {
     if (href) xml = `<text:a xlink:type="simple" xlink:href="${esc(href)}">${xml}</text:a>`;
     else out.warnings.add("a link with an unsafe target was written as plain text");
   }
+  out.bytes(xml.length);
   return xml;
 }
 
@@ -118,7 +119,8 @@ function inlineXml(nodes: Inline[], out: Out): string {
           }
         }
       })();
-      out.bytes(xml.length);
+      // A run charged its own XML already.
+      if (node.type !== "text") out.bytes(xml.length);
       return xml;
     })
     .join("");
@@ -134,7 +136,7 @@ function listXml(list: List, out: Out): string {
 }
 
 function tableXml(table: Table, out: Out): string {
-  const columns = Math.max(0, ...table.rows.map((r) => r.length));
+  const columns = table.rows.reduce((n, r) => Math.max(n, r.length), 0);
   const row = (cells: Block[][]) =>
     `<table:table-row>${Array.from({ length: columns }, (_, i) => {
       const blocks = cells[i] ?? [];
@@ -444,7 +446,7 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
           out.push({ type: "paragraph", content: frame(el) });
           break;
         case "text:section":
-          out.push(...blocksOf(el, depth, inherited));
+          for (const inner of blocksOf(el, depth, inherited)) out.push(inner);
           break;
         default:
           if (!IGNORED.test(el.name)) warn(el.name);

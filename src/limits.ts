@@ -37,7 +37,7 @@ export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   maxXmlDepth: 100,
   maxXmlElements: 1_000_000,
   maxCells: 1_000_000,
-  maxTextChars: 32 * 1024 * 1024,
+  maxTextChars: 8 * 1024 * 1024,
   maxStyleDepth: 50,
 });
 

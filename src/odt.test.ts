@@ -308,6 +308,20 @@ describe("hostile files", () => {
     limitExceeded(() => writeOdt({ blocks: [nest(40)] }, withLimits({ maxTotalBytes: 1_000_000 })));
   });
 
+  test("15 a section with many blocks, and a table with many rows, fail or pass as a FormatError, never a stack overflow", () => {
+    const paragraphs = Array.from({ length: 200_000 }, (_, i) => `<text:p>${i}</text:p>`).join("");
+    expect(readOdt(odt(wrap(`<text:section>${paragraphs}</text:section>`))).model.blocks).toHaveLength(200_000);
+    const row = [[{ type: "paragraph" as const, content: [{ type: "text" as const, text: "x" }] }]];
+    const table = { type: "table" as const, rows: Array.from({ length: 200_000 }, () => row) };
+    const written = writeOdt({ blocks: [table] }, withLimits({ maxTotalBytes: 100_000_000 }));
+    expect(written.bytes.length).toBeGreaterThan(0);
+  });
+
+  test("15 a run of newlines is charged as the XML it becomes, before the next piece is made", () => {
+    const run = { type: "text" as const, text: "\n".repeat(2_000_000) };
+    limitExceeded(() => writeOdt({ blocks: [{ type: "paragraph", content: [run, run, run, run, run, run] }] }, withLimits({ maxTextChars: 20_000_000 })));
+  });
+
   const STYLE_NS = `xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"`;
   const withStyles = (styles: string, body: string) =>
     wrap(body).replace("<office:body>", `<office:automatic-styles ${STYLE_NS}>${styles}</office:automatic-styles><office:body>`);
