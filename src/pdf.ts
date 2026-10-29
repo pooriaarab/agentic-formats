@@ -153,7 +153,7 @@ class Pdf {
     const img: Img = { name: `Im${id}`, id };
     if (sniffed.mime === "image/jpeg") {
       const comps = jpegComponents(data);
-      if (comps !== 1 && comps !== 3) return skip("is a JPEG that is not gray or RGB");
+      if (comps !== 1 && comps !== 3) return skip("is a JPEG of a kind the PDF writer does not embed (CMYK, 12-bit, lossless, or arithmetic coded)");
       this.set(id, `<</Type /XObject /Subtype /Image /Width ${sniffed.width} /Height ${sniffed.height} /ColorSpace /${comps === 1 ? "DeviceGray" : "DeviceRGB"} /BitsPerComponent 8 /Filter /DCTDecode>>`, data);
       return img;
     }
@@ -190,7 +190,8 @@ class Pdf {
       if (ctype === 3 && (!palette || palette.length < 3 || palette.length > 768)) return skip("is a PNG with no palette");
       if ((ctype === 2 && depth < 8) || (ctype === 3 && depth > 8) || ![1, 2, 4, 8, 16].includes(depth)) return skip("is an unusual PNG");
       // The viewer unpacks this stream, so its size counts against the same caps as an image that is unpacked here.
-      const unpacked = height * (1 + Math.ceil((width * colors * depth) / 8));
+      // A viewer expands a palette or sub-byte image to whole bytes, so count that size when it is larger.
+      const unpacked = Math.max(height * (1 + Math.ceil((width * colors * depth) / 8)), width * height * (ctype === 3 ? 3 : colors));
       if (unpacked > this.caps.maxEntryBytes) throw new FormatError("LIMIT_EXCEEDED", "an image is larger than the entry limit when unpacked");
       this.decoded(unpacked);
       // Unpack it here, bounded, so a damaged or bomb stream is reported and not handed to the viewer.
@@ -233,7 +234,7 @@ class Pdf {
       this.set(id, `<</Type /Font /Subtype /Type1 /BaseFont /${FACES[key as Face]} /Encoding /WinAnsiEncoding>>`);
       return `/${key} ${id} 0 R`;
     });
-    const xobjects = [...this.images.values()].filter((i): i is Img => !!i).map((i) => `/${i.name} ${i.id} 0 R`);
+    const xobjects = [...new Map([...this.images.values()].filter((i): i is Img => !!i).map((i) => [i.id, i] as const)).values()].map((i) => `/${i.name} ${i.id} 0 R`);
     const resources = this.alloc();
     this.set(resources, `<</Font <<${fonts.join(" ")}>> /XObject <<${xobjects.join(" ")}>>>>`);
     const catalog = this.alloc();
@@ -382,6 +383,8 @@ function wrap(atoms: Atom[], size: number, width: number): Line[] {
   const lines: Line[] = [];
   let line: Line = [];
   let used = 0;
+  // Spaces are kept at the start of the text and after a hard break, so indented lines keep their indent.
+  let keepSpaces = true;
   const push = (text: string, a: Atom, w: number): void => {
     const last = line[line.length - 1];
     if (last && sameStyle(last, a)) {
@@ -394,6 +397,7 @@ function wrap(atoms: Atom[], size: number, width: number): Line[] {
     lines.push(line);
     line = [];
     used = 0;
+    keepSpaces = false;
   };
   const w = Math.max(width, size);
   const widthOf = (text: string, face: Face): number => [...text].reduce((n, c) => n + (charWidth(c.charCodeAt(0), face) * size) / 1000, 0);
@@ -420,6 +424,7 @@ function wrap(atoms: Atom[], size: number, width: number): Line[] {
     if (a.text === "\n") {
       place();
       wrapAt();
+      keepSpaces = true;
       continue;
     }
     for (const token of a.text.match(/ +|[^ ]+/g) ?? []) {
@@ -429,7 +434,7 @@ function wrap(atoms: Atom[], size: number, width: number): Line[] {
         continue;
       }
       place();
-      if ((used > 0 || lines.length === 0) && used + tw <= w) push(token, a, tw);
+      if ((used > 0 || keepSpaces) && used + tw <= w) push(token, a, tw);
     }
   }
   place();
@@ -493,7 +498,7 @@ function writeDeck(deck: Deck, pdf: Pdf): void {
         size = Math.max(size, 8);
         const fit = Math.max(0, Math.floor((height + 0.01) / (size * 1.2)));
         if (lines.length > fit) {
-          pdf.warnings.add(`text was cut to fit its box on slide ${index + 1}`);
+          if (lines.slice(fit).some((l) => l.some((seg) => seg.text.trim()))) pdf.warnings.add(`text was cut to fit its box on slide ${index + 1}`);
           lines = lines.slice(0, fit);
         }
         lines.forEach((line, i) => drawLine(page, line, size, x, top - y - size * 1.2 * i - size));
@@ -563,7 +568,7 @@ function inlineItems(ctx: Ctx, content: Inline[], width: number, dx: number, siz
     if (node.type === "text") runs.push(node);
     else if (node.type === "break") runs.push({ type: "text", text: "\n" });
     else if (node.type === "footnote") {
-      ctx.notes.push(wrap(atomsOf(ctx.pdf, [{ type: "text", text: `${ctx.notes.length + 1}. ` }, ...(node.content.map((n) => (n.type === "break" ? { type: "text", text: " " } : n)) as TextRun[])], false), 9, width));
+      ctx.notes.push(wrap(atomsOf(ctx.pdf, [{ type: "text", text: `${ctx.notes.length + 1}. ` }, ...(node.content.map((n) => (n.type === "break" ? { type: "text", text: " " } : n)) as TextRun[])], false), 9, PAGE_W - 2 * MARGIN));
       runs.push({ type: "text", text: `[${ctx.notes.length}]` });
     } else {
       flush();
