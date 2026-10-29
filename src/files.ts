@@ -1,4 +1,5 @@
-import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, realpathSync, statSync, writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { FormatError, withLimits, type Limits } from "./limits.js";
@@ -100,30 +101,38 @@ export function readInput(path: string, limits?: Partial<Limits>): Uint8Array {
 }
 
 /**
- * Write a file. It refuses to replace one unless `overwrite` is true, never replaces the input, does not open
- * a link at the path it is given (the MCP tools resolve a link inside the folder before this call, and refuse one
- * that leaves it), and never rewrites a file that has more than one name.
+ * Write a file in one step. The bytes go to a new temporary file in the same folder, then a rename (or, without
+ * `overwrite`, a hard link that fails if the name is taken) puts them at the path. A reader sees the old file or
+ * the whole new one, never a part. Because the last step acts on the name and not on a file opened by name,
+ * a link or a second name swapped in after the checks is replaced, never followed, so nothing outside the path
+ * changes. It refuses to replace a file unless `overwrite` is true, never replaces the input, and refuses a link
+ * or a file that is not plain.
  */
 export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean, input?: string): void {
   if (input !== undefined && existsSync(path) && realpathSync(path) === realpathSync(input)) throw new UsageError("the output is the input file");
-  // A named pipe or a device as the output would block the server at open, or write to a place that is not a file.
+  // A named pipe or a device as the output would be replaced by a plain file; refuse it, as it is not what the caller named.
   const existing = exists(path) ? lstatSync(path) : undefined;
-  if (existing && !existing.isFile() && !existing.isSymbolicLink()) throw new UsageError(`"${path}" is not a plain file`);
-  let fd: number;
+  if (existing && existing.isSymbolicLink()) throw new UsageError(`"${path}" is a link; the output must be a plain file`);
+  if (existing && !existing.isFile()) throw new UsageError(`"${path}" is not a plain file`);
+  if (existing && !overwrite) throw new UsageError(`"${path}" exists; pass --force to replace it`);
+  const temp = join(dirname(path), `.${basename(path)}.${randomBytes(8).toString("hex")}.tmp`);
+  // O_EXCL fails on any name that exists, a link included, and O_NOFOLLOW backs it up.
+  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), existing ? existing.mode & 0o777 : 0o666);
   try {
-    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (overwrite ? 0 : constants.O_EXCL), 0o666);
+    try {
+      for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    if (overwrite) renameSync(temp, path);
+    else linkSync(temp, path);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EEXIST") throw new UsageError(`"${path}" exists; pass --force to replace it`);
-    if (code === "ELOOP") throw new UsageError(`"${path}" is a link; the output must be a plain file`);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`"${path}" exists; pass --force to replace it`);
     throw error;
-  }
-  try {
-    if (fstatSync(fd).nlink > 1) throw new UsageError(`"${path}" has more than one name (a hard link); it is not replaced`);
-    ftruncateSync(fd, 0);
-    for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
   } finally {
-    closeSync(fd);
+    // After a rename the temporary name is gone; after a link or a failure it is not.
+    rmSync(temp, { force: true });
   }
 }
 
