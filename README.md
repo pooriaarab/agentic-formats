@@ -94,6 +94,10 @@ a person at a shell chooses the paths. Add the server to Claude Code with `.mcp.
   points that fits, and text that still does not fit is cut and reported. It has no PDF reader. The
   output is deterministic and the code is plain JavaScript, so it runs in a Worker. See Limits.
 - **Normalizing.** `normalizeTextDoc` merges equal runs, so you can compare two documents.
+- **Spreadsheet helpers.** `NUMBER_FORMATS` lists the seven number format codes that ODS and XLSX both
+  hold: `0`, `0.00`, `#,##0`, `#,##0.00`, `0%`, `0.00%`, and `yyyy-mm-dd`. Set a cell's `format` to one of
+  them, and both ODS and XLSX keep it. `columnName(column)` turns a 1-based column number into its letters:
+  `columnName(1)` is `A`, `columnName(27)` is `AA`, and `columnName(16384)` is `XFD`, the last column.
 
 ```ts
 import { readOdt, writeOdt, FormatError } from "agentic-formats";
