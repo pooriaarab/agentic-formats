@@ -290,6 +290,15 @@ describe("hostile files", () => {
     const started = Date.now();
     limitExceeded(() => writeOdt({ blocks: [table] }, withLimits({ maxTotalBytes: 5_000_000 })));
     expect(Date.now() - started).toBeLessThan(5000);
+    const emptyRow = Array.from({ length: 5000 }, () => [] as Block[]);
+    const empty = { type: "table" as const, rows: Array.from({ length: 5000 }, () => emptyRow) };
+    limitExceeded(() => writeOdt({ blocks: [empty] }, withLimits({ maxTotalBytes: 5_000_000 })));
+    // Forty lists whose items each hold the list below twice: 2^40 items.
+    const level = (k: number): Block => {
+      const inner = k === 0 ? undefined : (level(k - 1) as Extract<Block, { type: "list" }>);
+      return { type: "list", ordered: false, items: [{ content: [], ...(inner ? { sublist: inner } : {}) }, { content: [], ...(inner ? { sublist: inner } : {}) }] };
+    };
+    limitExceeded(() => writeOdt({ blocks: [level(40)] }, withLimits({ maxTotalBytes: 1_000_000 })));
     // Forty objects that stand for 2^40 tables: each level holds the level below twice.
     const nest = (k: number): Block => {
       if (k === 0) return { type: "paragraph", content: [{ type: "text", text: "x" }] };

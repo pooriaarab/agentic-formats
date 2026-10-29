@@ -125,7 +125,11 @@ function inlineXml(nodes: Inline[], out: Out): string {
 }
 
 function listXml(list: List, out: Out): string {
-  const items = list.items.map((item) => `<text:list-item><text:p text:style-name="Standard">${inlineXml(item.content, out)}</text:p>${item.sublist ? listXml(item.sublist, out) : ""}</text:list-item>`);
+  const items = list.items.map((item) => {
+    const xml = `<text:list-item><text:p text:style-name="Standard">${inlineXml(item.content, out)}</text:p>${item.sublist ? listXml(item.sublist, out) : ""}</text:list-item>`;
+    out.bytes(xml.length);
+    return xml;
+  });
   return `<text:list text:style-name="${list.ordered ? "Numbering" : "Bullets"}">${items.join("")}</text:list>`;
 }
 
@@ -134,7 +138,9 @@ function tableXml(table: Table, out: Out): string {
   const row = (cells: Block[][]) =>
     `<table:table-row>${Array.from({ length: columns }, (_, i) => {
       const blocks = cells[i] ?? [];
-      return `<table:table-cell office:value-type="string">${blocks.length ? blocks.map((b) => blockXml(b, out)).join("") : `<text:p text:style-name="Standard"/>`}</table:table-cell>`;
+      const tc = `<table:table-cell office:value-type="string">${blocks.length ? blocks.map((b) => blockXml(b, out)).join("") : `<text:p text:style-name="Standard"/>`}</table:table-cell>`;
+      out.bytes(tc.length);
+      return tc;
     }).join("")}</table:table-row>`;
   const [first, ...rest] = table.rows;
   const rows = table.header && first ? `<table:table-header-rows>${row(first)}</table:table-header-rows>${rest.map(row).join("")}` : table.rows.map(row).join("");
