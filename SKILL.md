@@ -24,7 +24,7 @@ agentic-formats convert report.odt report.docx
 agentic-formats inspect report.docx
 ```
 
-Output is JSON on stdout. A refusal exits with 1 and prints the reason on stderr.
+Output is JSON on stdout. A usage error (an unknown command, or an unknown flag or argument to `convert` or `inspect`) exits with 2. Any other refusal exits with 1. Both print the reason on stderr.
 `convert` replaces no file unless you pass `--force`.
 
 ## Use the MCP server
