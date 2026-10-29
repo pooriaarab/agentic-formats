@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+
+- SKILL.md names the exit code for each command-line case, as the CLI does. An unknown command, a flag or argument that the command does not take, and a wrong number of paths to `convert` or `inspect` exit 2. Any other refusal exits 1, such as an unknown file extension. The npm package does not ship SKILL.md, so this text is in the repository, not in the package.
+- The README status line names this version. The 0.4.2 package said 0.4.0.
+- The README documents `columnName` and `NUMBER_FORMATS`. `NUMBER_FORMATS` lists the seven number format codes that ODS and XLSX share. `columnName` returns the column letters for a column number. The code does not change.
+
 ## 0.4.2
 
 - `agentic-formats mcp --help` and `-h` print the usage and exit 0. `--version` and `-V` print the version and exit 0. Before, the subcommand started the server, and the flag waited on stdin. An unknown option after `mcp` exits 2, as it does for `agentic-formats-mcp`.
