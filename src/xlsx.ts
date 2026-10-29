@@ -115,6 +115,11 @@ export function writeXlsx(book: Workbook, limits?: Partial<Limits>): WriteResult
 
 // ---------- read ----------
 
+/** Most distinct warnings a read returns; one more line says how many were left out. */
+const MAX_WARNINGS = 50;
+/** A sheet name in a warning is cut, as a name has no length limit in a hostile file. */
+const shortName = (name: string | undefined): string => (name && name.length > 60 ? `${name.slice(0, 60)}...` : (name ?? ""));
+
 const BUILTIN_BY_ID: Record<number, string> = { 1: "0", 2: "0.00", 3: "#,##0", 4: "#,##0.00", 9: "0%", 10: "0.00%", 14: "yyyy-mm-dd" };
 
 /** Known spellings of one format become the model's code. Any other code stays as written. */
@@ -132,20 +137,32 @@ const stringOf = (si: XmlElement): string =>
     .map((k) => (k.name === "t" ? textOf(k) : k.name === "r" ? textOf(childOf(k, "t")) : ""))
     .join("");
 
+const hasRuns = (si: XmlElement): boolean => elementsOf(si).some((k) => k.name === "r" && childOf(k, "rPr"));
+
 /** Read an Excel file (.xlsx). Content with no place in the model is listed in `warnings`. */
 export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult<Workbook> {
   const caps = withLimits(limits);
   const pkg = readOoxmlPackage(bytes, caps, "XLSX", SML);
+  // A hostile file can name thousands of sheets or number formats: keep a bounded list and count the rest.
   const warnings = new Set<string>();
-  const warn = (message: string) => warnings.add(message);
+  let unlisted = 0;
+  const warn = (message: string) => {
+    if (warnings.has(message)) return;
+    if (warnings.size < MAX_WARNINGS) warnings.add(message);
+    else unlisted++;
+  };
   const workbook = pkg.parse(pkg.mainPart);
+  if (childOf(workbook, "definedNames")) warn("named ranges were not read");
   if (childOf(workbook, "workbookPr")?.attrs.date1904 === "1") warn("the 1904 date system: dates read 1462 days early");
   const workbookRels = pkg.rels(pkg.mainPart);
   const partOf = (kind: string): string | undefined => [...workbookRels.values()].find((r) => r.kind === kind && !r.external)?.target;
 
   const shared: string[] = [];
   const sharedPart = partOf("sharedStrings");
-  if (sharedPart && pkg.files[sharedPart]) for (const si of elementsOf(pkg.parse(sharedPart))) shared.push(stringOf(si));
+  if (sharedPart && pkg.files[sharedPart]) for (const si of elementsOf(pkg.parse(sharedPart))) {
+    shared.push(stringOf(si));
+    if (hasRuns(si)) warn("text styles inside a cell were not read");
+  }
 
   const formatOfStyle: (string | undefined)[] = [];
   const stylesPart = partOf("styles");
@@ -170,16 +187,19 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   for (const entry of elementsOf(childOf(workbook, "sheets"))) {
     const rel = workbookRels.get(entry.attrs["r:id"] ?? "");
     if (!rel || rel.external || rel.kind !== "worksheet") {
-      warn(`the sheet "${entry.attrs.name}" is not a worksheet: not imported`);
+      warn(`the sheet "${shortName(entry.attrs.name)}" is not a worksheet: not imported`);
       continue;
     }
     // A part that two sheet entries name would be parsed and copied twice.
     if (readParts.has(rel.target)) {
-      warn(`the sheet "${entry.attrs.name}" shares its worksheet part with an earlier sheet: not imported`);
+      warn(`the sheet "${shortName(entry.attrs.name)}" shares its worksheet part with an earlier sheet: not imported`);
       continue;
     }
     readParts.add(rel.target);
+    if (entry.attrs.state === "hidden" || entry.attrs.state === "veryHidden") warn("a hidden sheet was read as visible");
     const sheet = pkg.parse(rel.target);
+    if (childOf(sheet, "drawing") || childOf(sheet, "legacyDrawing")) warn("charts, images, or comments were not read");
+    if (childOf(sheet, "conditionalFormatting") || childOf(sheet, "dataValidations")) warn("conditional formats or data validation rules were not read");
     const cells: Record<string, Cell> = {};
     if (childOf(sheet, "mergeCells")) warn("merged cells were read as single cells");
     let nextRow = 0;
@@ -205,15 +225,19 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
           warn("an error value was read as text");
         } else if (type === "d") value = isoToSerial(raw);
         else if (childOf(c, "v") && raw.trim() !== "" && Number.isFinite(Number(raw))) value = Number(raw);
+        if (value === undefined && type !== "s" && raw.trim() !== "") warn("a cell value that is not a number or a date was not read");
         const f = childOf(c, "f");
         let formula: string | undefined;
         if (f) {
           if (f.attrs.t === "shared" && !textOf(f)) warn("a shared formula was read as its value");
           else formula = textOf(f).replace(/^=/, "");
+          if (f.attrs.t === "array" || f.attrs.t === "dataTable") warn("an array formula or data table was read as a plain formula");
           if (formula !== undefined && formula.length > MAX_FORMULA) throw new FormatError("LIMIT_EXCEEDED", `a formula is longer than ${MAX_FORMULA} characters`);
           if (formula !== undefined && isBooleanLiteral(formula, value)) formula = undefined;
         }
-        const format = formatOfStyle[Number(c.attrs.s ?? 0)];
+        const style = Number(c.attrs.s ?? 0);
+        if (style !== 0 && !(style < formatOfStyle.length)) warn("a cell points to a missing style");
+        const format = formatOfStyle[style];
         if (value === undefined && formula === undefined && !(format && c.attrs.s)) continue;
         chargeText((typeof value === "string" ? value.length : 0) + (formula?.length ?? 0) + (format?.length ?? 0));
         if (++cellCount > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${caps.maxCells} cells`);
@@ -223,5 +247,5 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
     sheets.push({ name: entry.attrs.name ?? `Sheet${sheets.length + 1}`, cells });
   }
   if (!sheets.length) throw new FormatError("INVALID_FILE", "the XLSX file has no sheet");
-  return { model: { sheets }, warnings: [...warnings] };
+  return { model: { sheets }, warnings: [...warnings, ...(unlisted ? [`${unlisted} more warnings`] : [])] };
 }
