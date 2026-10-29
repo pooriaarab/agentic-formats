@@ -283,14 +283,17 @@ describe("mcp output links", () => {
     linkSync(join(outside, "victim.docx"), join(root, "hard.docx"));
     const client = await connect(root);
     try {
-      const why: Record<string, RegExp> = { "dangling.docx": /points nowhere/, "live.docx": /outside the allowed folder/, "hard.docx": /outside the allowed folder|more than one name|pass --force/ };
-      for (const output of ["dangling.docx", "live.docx", "hard.docx"]) {
+      const why: Record<string, RegExp> = { "dangling.docx": /points nowhere/, "live.docx": /outside the allowed folder/ };
+      for (const output of ["dangling.docx", "live.docx"]) {
         for (const overwrite of [true, false]) {
           const r = await call(client, "convert_file", { input: "in.odt", output, overwrite });
           expect(r.isError, `${output} ${overwrite}`).toBe(true);
           expect(r.text, `${output} ${overwrite}`).toMatch(why[output]);
         }
       }
+      // A second name for a file outside is refused without --force, and with it the name is replaced, not the file behind it.
+      expect((await call(client, "convert_file", { input: "in.odt", output: "hard.docx", overwrite: false })).text).toMatch(/pass --force/);
+      expect((await call(client, "convert_file", { input: "in.odt", output: "hard.docx", overwrite: true })).isError).toBe(false);
       expect(existsSync(join(outside, "new.docx"))).toBe(false);
       expect(readFileSync(join(outside, "victim.docx"), "utf8")).toBe("original");
       const dangling = await call(client, "convert_file", { input: "in.odt", output: "dangling.docx", overwrite: true });

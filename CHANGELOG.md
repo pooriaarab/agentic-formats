@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Output files are written to a temporary file and renamed, so a failed write keeps the old file.
+
 ## 0.1.0
 
 First release.
