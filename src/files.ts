@@ -39,7 +39,16 @@ export function pathPolicyFromEnv(env: NodeJS.ProcessEnv, cwd: string): PathPoli
   const folder = resolve(cwd, root ?? ".");
   if (!existsSync(folder) || !statSync(folder).isDirectory()) throw new UsageError(`"${folder}" is not a folder`);
   // Some clients start a server in `/` or in the home folder. As a default that is the whole disk or every personal file, so a person must name a folder.
-  if (root === undefined && (folder === parse(folder).root || folder === resolve(homedir()))) {
+  // Compare real paths: the working folder is always a real path, and a home folder may go through a link.
+  const real = realpathSync(folder);
+  const realHome = (() => {
+    try {
+      return realpathSync(homedir());
+    } catch {
+      return resolve(homedir());
+    }
+  })();
+  if (root === undefined && (real === parse(real).root || real === realHome)) {
     throw new UsageError(`the working folder "${folder}" is the filesystem root or the home folder; set AGENTIC_FORMATS_ROOT to the folder the tools may use`);
   }
   return { folder };

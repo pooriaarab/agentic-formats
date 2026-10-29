@@ -475,6 +475,12 @@ describe("mcp path policy", () => {
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(/is the filesystem root or the home folder; set AGENTIC_FORMATS_ROOT/);
     }
+    // A home folder that is a link to the working folder is the home folder.
+    const link = at("home-link");
+    symlinkSync(dir, link);
+    const viaLink = start(dir, { HOME: link });
+    expect(viaLink.status).toBe(1);
+    expect(viaLink.stderr).toMatch(/is the filesystem root or the home folder/);
     // Naming the folder is allowed, even when it is the home folder.
     expect(start(dir, { HOME: dir, AGENTIC_FORMATS_ROOT: dir }).stderr).not.toMatch(/filesystem root or the home folder/);
   });
