@@ -465,5 +465,23 @@ describe("PDF writer, review round 4", () => {
     const runs = Array.from({ length: 20_000 }, (_, i) => ({ type: "text" as const, text: "ab"[i % 2], marks: [(["bold", "underline", "strike"] as const)[i % 3]] }));
     expect(() => writePdf({ blocks: [{ type: "paragraph", content: runs }] }, { maxTotalBytes: 100_000 })).toThrow(FormatError);
   });
+
+  test("7 a table of very narrow columns lays out a page of lines for each cell, not a line for each character", () => {
+    const row = Array.from({ length: 60 }, () => [para("w".repeat(5000))]);
+    const { warnings, bytes } = writePdf({ blocks: [{ type: "table", rows: Array.from({ length: 5 }, () => row) }] });
+    structure(bytes);
+    expect(warnings).toContain("a table row taller than a page was cut to fit");
+  });
+
+  test("2 wide Latin-1 letters wrap inside the page", () => {
+    const { bytes } = writePdf({ blocks: [para("ÆŒ".repeat(60))] });
+    // Each of these letters is 11 points wide at 11 point type, so a 468 point line holds 42 at most.
+    const lines = [...latin(bytes).matchAll(/\/Filter \/FlateDecode \/Length (\d+)>>\nstream\n/g)].flatMap((m) => {
+      const at = m.index! + m[0].length;
+      return [...strFromU8(unzlibSync(bytes.subarray(at, at + Number(m[1]))), true).matchAll(/\(((?:[^\\)]|\\.)*)\) Tj/g)].map((t) => t[1].replace(/\\\d{3}/g, "?").length / 4 === 0 ? 0 : (t[1].match(/\\\d{3}/g) ?? []).length);
+    });
+    expect(lines.length).toBeGreaterThan(2);
+    for (const n of lines) expect(n).toBeLessThanOrEqual(42);
+  });
 });
 

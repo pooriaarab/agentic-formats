@@ -20,7 +20,9 @@ const WIN_ANSI = new Map<number, number>(
 /** Widths of ASCII 32..126 in Helvetica and Helvetica-Bold, in 1/1000 em. */
 const HELVETICA = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584];
 const HELVETICA_BOLD = [278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584];
-const WIDE: Record<number, number> = { 0x95: 350, 0x97: 1000, 0x85: 1000, 0x99: 1000, 0x92: 222, 0x91: 222, 0x93: 333, 0x94: 333, 0xa0: 278 };
+/** Widths of bytes 0x80..0xFF (WinAnsi) in Helvetica and Helvetica-Bold. */
+const HIGH = [556, 556, 222, 556, 333, 1000, 556, 556, 333, 1000, 667, 333, 1000, 556, 611, 556, 556, 222, 222, 333, 333, 350, 556, 1000, 333, 1000, 500, 333, 944, 556, 500, 667, 278, 333, 556, 556, 556, 556, 260, 556, 333, 737, 370, 556, 584, 333, 737, 333, 400, 584, 333, 333, 333, 556, 537, 278, 333, 333, 365, 556, 834, 834, 834, 611, 667, 667, 667, 667, 667, 667, 1000, 722, 667, 667, 667, 667, 278, 278, 278, 278, 722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611, 556, 556, 556, 556, 556, 556, 889, 500, 556, 556, 556, 556, 278, 278, 278, 278, 556, 556, 556, 556, 556, 556, 556, 584, 611, 556, 556, 556, 556, 500, 556, 500];
+const HIGH_BOLD = [556, 556, 278, 556, 500, 1000, 556, 556, 333, 1000, 667, 333, 1000, 556, 611, 556, 556, 278, 278, 500, 500, 350, 556, 1000, 333, 1000, 556, 333, 944, 556, 500, 667, 278, 333, 556, 556, 556, 556, 280, 556, 333, 737, 370, 556, 584, 333, 737, 333, 400, 584, 333, 333, 333, 611, 556, 278, 333, 333, 365, 556, 834, 834, 834, 611, 722, 722, 722, 722, 722, 722, 1000, 722, 667, 667, 667, 667, 278, 278, 278, 278, 722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611, 556, 556, 556, 556, 556, 556, 889, 556, 556, 556, 556, 556, 278, 278, 278, 278, 611, 611, 611, 611, 611, 611, 611, 584, 611, 611, 611, 611, 611, 556, 611, 556];
 
 type Face = "F1" | "F2" | "F3" | "F4" | "F5";
 const FACES: Record<Face, string> = { F1: "Helvetica", F2: "Helvetica-Bold", F3: "Helvetica-Oblique", F4: "Helvetica-BoldOblique", F5: "Courier" };
@@ -33,7 +35,8 @@ const faceOf = (marks: readonly string[] | undefined, bold: boolean): Face => {
 const charWidth = (byte: number, face: Face): number => {
   if (face === "F5") return 600;
   if (byte >= 32 && byte <= 126) return (face === "F2" || face === "F4" ? HELVETICA_BOLD : HELVETICA)[byte - 32];
-  return WIDE[byte] ?? (face === "F2" || face === "F4" ? 611 : 556);
+  if (byte >= 0x80) return (face === "F2" || face === "F4" ? HIGH_BOLD : HIGH)[byte - 0x80];
+  return 556;
 };
 
 // ---------- the file ----------
@@ -394,7 +397,7 @@ function atomsOf(pdf: Pdf, runs: TextRun[], bold: boolean): Atom[] {
 const sameStyle = (s: Seg, a: Atom): boolean => s.face === a.face && !!s.underline === !!a.underline && !!s.strike === !!a.strike && s.href === a.href;
 
 /** Break atoms into lines no wider than `width` points. A word wider than a line splits. */
-function wrap(atoms: Atom[], size: number, width: number): Line[] {
+function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): Line[] {
   const lines: Line[] = [];
   let line: Line = [];
   let used = 0;
@@ -409,6 +412,12 @@ function wrap(atoms: Atom[], size: number, width: number): Line[] {
     used += w;
   };
   const wrapAt = (): void => {
+    if (lines.length >= maxLines) {
+      // Stop growing: the rest could never be drawn, and a narrow box must not make a line for each character.
+      line = [];
+      used = 0;
+      return;
+    }
     lines.push(line);
     line = [];
     used = 0;
@@ -532,6 +541,8 @@ const CONTENT_H = PAGE_H - 2 * MARGIN;
 const BODY = 11;
 const HEADING_SIZES = [22, 18, 15, 13, 12, 11];
 const CELL_PAD = 4;
+/** The most lines a table cell lays out: more than a page holds can never be drawn. */
+const CELL_LINES = Math.ceil(CONTENT_H / (BODY * 1.3)) + 1;
 
 interface Item {
   h: number;
@@ -576,7 +587,7 @@ function inlineItems(ctx: Ctx, content: Inline[], width: number, dx: number, siz
   let runs: TextRun[] = [];
   const flush = (): void => {
     if (runs.length === 0) return;
-    for (const line of wrap(atomsOf(ctx.pdf, runs, bold), size, width - dx)) items.push(lineItem(line, size, dx));
+    for (const line of wrap(atomsOf(ctx.pdf, runs, bold), size, width - dx, ctx.depth > 0 ? CELL_LINES : Infinity)) items.push(lineItem(line, size, dx));
     runs = [];
   };
   for (const node of content) {
@@ -673,7 +684,13 @@ function tableItems(ctx: Ctx, block: Extract<Block, { type: "table" }>, width: n
 
 function flow(ctx: Ctx, blocks: Block[], width: number, dx: number, bold = false): Item[] {
   const items: Item[] = [];
+  let height = 0;
   for (const block of blocks) {
+    // In a cell, what goes past a page is cut when the row is drawn, so it is not laid out.
+    if (ctx.depth > 0) {
+      if (height > CONTENT_H) break;
+      height = items.reduce((n, i) => n + i.h, 0);
+    }
     if (block.type === "heading") {
       const size = HEADING_SIZES[headingLevel(block.level) - 1];
       items.push(gap(size * 0.4));
