@@ -82,6 +82,10 @@ a person at a shell chooses the paths. Add the server to Claude Code with `.mcp.
   boxes (paragraphs with marks and links), rectangles, ellipses, lines, pictures, and notes, on a
   slide of any size. A PPTX placeholder with no position of its own takes it from its layout, then
   its master. LibreOffice round trips cover both formats and the trip from one to the other.
+- **MIME types.** `ODT_MIME`, `ODS_MIME`, and `ODP_MIME` hold the media type of each ODF
+  format (`application/vnd.oasis.opendocument.text`, `...spreadsheet`, `...presentation`). Use them
+  to set a `Content-Type` header. Each ODF reader also reads the `-template` variant, and
+  `readOdt` also reads the `-web` variant.
 - **PDF.** `writePdf(deck)` writes one page per slide, and `writePdf(textDoc)` writes Letter pages.
   It handles text with marks and links, headings, lists, tables, footnotes, PNG and JPEG images,
   and rectangles, ellipses, and lines. A slide text box takes the largest size from 18 to 8
