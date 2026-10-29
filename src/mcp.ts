@@ -74,5 +74,5 @@ export async function startMcp(policy: PathPolicy): Promise<void> {
   await createMcpServer(policy).connect(new StdioServerTransport());
 }
 
-/** Start the server with the policy that the environment names. A bad variable throws a `UsageError` before anything starts. */
-export const startMcpFromEnv = (env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): Promise<void> => startMcp(pathPolicyFromEnv(env, cwd));
+/** Start the server with the policy that the environment names. A bad variable rejects with a `UsageError` before anything starts. */
+export const startMcpFromEnv = async (env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): Promise<void> => startMcp(pathPolicyFromEnv(env, cwd));

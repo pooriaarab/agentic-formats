@@ -17,6 +17,40 @@ describe("built package", () => {
     expect(bad.stderr).toContain('"summary" is not a valid command');
   });
 
+  test("the MCP bin prints its help and version and exits 0 without starting the server", () => {
+    const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
+    const help = spawnSync("node", [bin, "--help"], { encoding: "utf8", timeout: 5000 });
+    expect(help.error).toBeUndefined();
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain("Usage: agentic-formats-mcp");
+    const ver = spawnSync("node", [bin, "--version"], { encoding: "utf8", timeout: 5000 });
+    expect(ver.error).toBeUndefined();
+    expect(ver.status).toBe(0);
+    expect(ver.stdout.trim()).toBe(version);
+    for (const flag of ["-h", "-V"]) {
+      const short = spawnSync("node", [bin, flag], { encoding: "utf8", timeout: 5000 });
+      expect(short.error).toBeUndefined();
+      expect(short.status).toBe(0);
+      expect(short.stdout).toContain(flag === "-h" ? "Usage: agentic-formats-mcp" : version);
+    }
+  });
+
+  test("the MCP bin reports a bad environment in one line, not a stack trace, and refuses an unknown flag", () => {
+    const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
+    const bad = spawnSync("node", [bin], { encoding: "utf8", timeout: 5000, env: { ...process.env, AGENTIC_FORMATS_ROOT: "" } });
+    expect(bad.error).toBeUndefined();
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain("AGENTIC_FORMATS_ROOT is set but empty");
+    expect(bad.stderr).not.toContain("    at ");
+    const flag = spawnSync("node", [bin, "--hlep"], { encoding: "utf8", timeout: 5000 });
+    expect(flag.error).toBeUndefined();
+    expect(flag.status).toBe(2);
+    expect(flag.stderr).toContain('unknown argument "--hlep"');
+    const mixed = spawnSync("node", [bin, "--bogus", "--help"], { encoding: "utf8", timeout: 5000 });
+    expect(mixed.status).toBe(2);
+    expect(mixed.stdout).toBe("");
+  });
+
   test("the MCP server starts over stdio", async () => {
     const client = new Client({ name: "probe", version: "0.0.0" });
     await client.connect(new StdioClientTransport({ command: "node", args: [cli, "mcp"] }));
