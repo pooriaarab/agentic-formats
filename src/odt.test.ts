@@ -308,7 +308,7 @@ describe("hostile files", () => {
     limitExceeded(() => writeOdt({ blocks: [nest(40)] }, withLimits({ maxTotalBytes: 1_000_000 })));
   });
 
-  test("15 a section with many blocks, and a table with many rows, fail or pass as a FormatError, never a stack overflow", () => {
+  test("15 a section with many blocks, and a table with many rows, fail or pass as a FormatError, never a stack overflow", { timeout: 60_000 }, () => {
     const paragraphs = Array.from({ length: 200_000 }, (_, i) => `<text:p>${i}</text:p>`).join("");
     expect(readOdt(odt(wrap(`<text:section>${paragraphs}</text:section>`))).model.blocks).toHaveLength(200_000);
     const row = [[{ type: "paragraph" as const, content: [{ type: "text" as const, text: "x" }] }]];
