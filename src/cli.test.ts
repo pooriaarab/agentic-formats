@@ -17,6 +17,17 @@ describe("built package", () => {
     expect(bad.stderr).toContain('"summary" is not a valid command');
   });
 
+  test("the MCP bin prints its help and version and exits 0 without starting the server", () => {
+    const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
+    const help = spawnSync("node", [bin, "--help"], { encoding: "utf8", timeout: 5000 });
+    expect(help.error).toBeUndefined();
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain("Usage: agentic-formats-mcp");
+    const ver = spawnSync("node", [bin, "--version"], { encoding: "utf8", timeout: 5000 });
+    expect(ver.error).toBeUndefined();
+    expect(ver.stdout.trim()).toBe(version);
+  });
+
   test("the MCP server starts over stdio", async () => {
     const client = new Client({ name: "probe", version: "0.0.0" });
     await client.connect(new StdioClientTransport({ command: "node", args: [cli, "mcp"] }));
