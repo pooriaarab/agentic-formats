@@ -18,6 +18,9 @@
  *    a shared string index past the table, a missing relationship, too many cells
  * 11 one big string fills many cells: a shared string used by many cells, a repeated cell, a model
  *    whose cells share one string; a writer builds its whole output before it checks the size
+ * 12 a long formula hangs the formula conversion; a few bytes of <text:s> expand to millions of
+ *    spaces; two sheet entries name one worksheet part; many distinct formats make a writer slow or
+ *    its warnings long
  * 10 LibreOffice cannot open our file, or its re-save does not read back to the same model, in the
  *    same format or after a trip through the other format; LibreOffice does not compute a formula
  *    we wrote without a cached result
@@ -313,6 +316,43 @@ describe("hostile files", () => {
     expect(() => readOds(ods(table(`<table:table-row>${cell.replace("<table:table-cell ", '<table:table-cell table:number-columns-repeated="3" ')}</table:table-row>`)), caps)).toThrow(/characters of cell text/);
     expect(() => readOds(ods(table(`<table:table-row table:number-rows-repeated="3">${cell}</table:table-row>`)), caps)).toThrow(/characters of cell text/);
     expect(() => readOds(ods(table(`<table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="1000" office:value-type="string" office:string-value="${big}"/></table:table-row>`)), caps)).toThrow(/characters of cell text/);
+  });
+
+  test("12 a formula past 8192 characters is refused fast, in both formats", () => {
+    const started = Date.now();
+    const cell = (formula: string) => `<table:table-row><table:table-cell office:value-type="float" office:value="1" table:formula="of:=${formula}"/></table:table-row>`;
+    expect(() => readOds(ods(table(cell("[".repeat(1_000_000)))))).toThrow(/formula is longer than 8192/);
+    expect(readOds(ods(table(cell("SUM([.A1];[.A2])")))).model.sheets[0].cells.A1).toMatchObject({ formula: "SUM(A1,A2)" });
+    expect(() => readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace(/<c r="A1"[^>]*>.*?<\/c>/, `<c r="A1"><f>${"A".repeat(9000)}</f></c>`)))).toThrow(/formula is longer than 8192/);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("12 text:s runs in a cell count against the text cap before the string is made", () => {
+    const cell = (n: number) => `<table:table-row><table:table-cell office:value-type="string"><text:p>a${'<text:s text:c="1000"/>'.repeat(n)}b</text:p></table:table-cell></table:table-row>`;
+    const caps = { maxTextChars: 10_000 };
+    expect(readOds(ods(table(cell(9))), caps).model.sheets[0].cells.A1).toMatchObject({ value: `a${" ".repeat(9000)}b` });
+    expect(() => readOds(ods(table(cell(11))), caps)).toThrow(/spaces in <text:s> elements/);
+    const started = Date.now();
+    expect(() => readOds(ods(table(cell(200_000))))).toThrow(FormatError);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(readOds(ods(table(cell(0).replace("ab</text:p>", 'a<text:s text:c="5000"/>b</text:p>'))), {}).warnings).toEqual(["a run of more than 1000 spaces was shortened"]);
+  });
+
+  test("12 two sheet entries that name one worksheet part read it once, and the repeat warns", () => {
+    const twice = patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", `<sheet name="T" sheetId="2" r:id="rId1"/></sheets>`));
+    const read = readXlsx(twice);
+    expect(read.model.sheets.map((s) => s.name)).toEqual(["S"]);
+    expect(read.warnings).toEqual(['the sheet "T" shares its worksheet part with an earlier sheet: not imported']);
+  });
+
+  test("12 many distinct number formats write fast, and the ODS warnings stay short", () => {
+    const cells = Object.fromEntries(Array.from({ length: 20_000 }, (_, i) => [`A${i + 1}`, { value: 1, format: `0.00_${i}` }]));
+    const started = Date.now();
+    expect(readXlsx(writeXlsx(sheet("S", cells)).bytes).model.sheets[0].cells.A20000).toMatchObject({ format: "0.00_19999" });
+    const { warnings } = writeOds(sheet("S", cells));
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(warnings.length).toBeLessThanOrEqual(101);
+    expect(warnings).toContain("more number formats are not written in ODS");
   });
 
   test("9 a relationship that leaves the package, or points nowhere, is refused or skipped", () => {

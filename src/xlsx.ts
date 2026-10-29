@@ -1,7 +1,7 @@
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { parseRef, refOf, sortedRefs, type Cell, type CellValue, type ReadResult, type Sheet, type Workbook, type WriteResult } from "./model.js";
 import { REL_NS, XML_HEADER, contentTypesXml, readOoxmlPackage, relsXml } from "./ooxml.js";
-import { checkWorkbook, hasContent, isBooleanLiteral, isoToSerial } from "./spreadsheet.js";
+import { MAX_FORMULA, checkWorkbook, hasContent, isBooleanLiteral, isoToSerial } from "./spreadsheet.js";
 import { childOf, elementsOf, textOf, xmlEscape as esc, type XmlElement } from "./xml.js";
 import { writeZip } from "./zip.js";
 
@@ -29,10 +29,14 @@ export function writeXlsx(book: Workbook, limits?: Partial<Limits>): WriteResult
   const caps = withLimits(limits);
   checkWorkbook(book, caps);
   const formats: string[] = [];
+  const formatIds = new Map<string, number>();
   const xf = (format: string): number => {
-    let at = formats.indexOf(format);
-    if (at < 0) at = formats.push(format) - 1;
-    return at + 1;
+    let id = formatIds.get(format);
+    if (id === undefined) {
+      id = formats.push(format);
+      formatIds.set(format, id);
+    }
+    return id;
   };
   const chargeTotal = capped(caps.maxTotalBytes, `the export passes ${caps.maxTotalBytes} bytes while it is written`);
   const sheets = book.sheets.map((sheet) => {
@@ -49,7 +53,14 @@ export function writeXlsx(book: Workbook, limits?: Partial<Limits>): WriteResult
       if (inRow) inRow.push(xml);
       else rows.set(row, [xml]);
     }
-    const data = [...rows].map(([row, cells]) => `<row r="${row}">${cells.join("")}</row>`).join("");
+    const data = [...rows]
+      .map(([row, cells]) => {
+        const wrapper = `<row r="${row}"></row>`.length;
+        chargeSheet(wrapper);
+        chargeTotal(wrapper);
+        return `<row r="${row}">${cells.join("")}</row>`;
+      })
+      .join("");
     return `${XML_HEADER}<worksheet xmlns="${MAIN}"><sheetData>${data}</sheetData></worksheet>`;
   });
   let custom = 164;
@@ -148,6 +159,7 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   let cellCount = 0;
   // A shared string is one string in memory but fills every cell that points to it, so each use counts.
   const chargeText = capped(caps.maxTextChars, `the workbook has more than ${caps.maxTextChars} characters of cell text`);
+  const readParts = new Set<string>();
   const sheets: Sheet[] = [];
   for (const entry of elementsOf(childOf(workbook, "sheets"))) {
     const rel = workbookRels.get(entry.attrs["r:id"] ?? "");
@@ -155,6 +167,12 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
       warn(`the sheet "${entry.attrs.name}" is not a worksheet: not imported`);
       continue;
     }
+    // A part that two sheet entries name would be parsed and copied twice.
+    if (readParts.has(rel.target)) {
+      warn(`the sheet "${entry.attrs.name}" shares its worksheet part with an earlier sheet: not imported`);
+      continue;
+    }
+    readParts.add(rel.target);
     const sheet = pkg.parse(rel.target);
     const cells: Record<string, Cell> = {};
     if (childOf(sheet, "mergeCells")) warn("merged cells were read as single cells");
@@ -186,6 +204,7 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
         if (f) {
           if (f.attrs.t === "shared" && !textOf(f)) warn("a shared formula was read as its value");
           else formula = textOf(f).replace(/^=/, "");
+          if (formula !== undefined && formula.length > MAX_FORMULA) throw new FormatError("LIMIT_EXCEEDED", `a formula is longer than ${MAX_FORMULA} characters`);
           if (formula !== undefined && isBooleanLiteral(formula, value)) formula = undefined;
         }
         const format = formatOfStyle[Number(c.attrs.s ?? 0)];

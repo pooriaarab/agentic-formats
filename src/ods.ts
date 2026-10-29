@@ -2,12 +2,13 @@ import { toOpenFormula, fromOpenFormula } from "./formula.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { parseRef, refOf, sortedRefs, type Cell, type CellValue, type ReadResult, type Sheet, type Workbook, type WriteResult } from "./model.js";
 import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, spaced, writeOdfPackage } from "./odf.js";
-import { ODS_FORMAT, checkWorkbook, hasContent, isBooleanLiteral, isDateFormat, isoToSerial, serialToIso } from "./spreadsheet.js";
+import { MAX_FORMULA, ODS_FORMAT, checkWorkbook, hasContent, isBooleanLiteral, isDateFormat, isoToSerial, serialToIso } from "./spreadsheet.js";
 import { childOf, elementsOf, xmlEscape as esc, type XmlElement } from "./xml.js";
 
 export const ODS_MIME = "application/vnd.oasis.opendocument.spreadsheet";
 const READABLE_MIMES = [ODS_MIME, `${ODS_MIME}-template`];
 const MAX_COLUMN = 16384;
+const MAX_FORMAT_WARNINGS = 100;
 /** LibreOffice reads the `of:` in a formula as an XML namespace prefix, so the root must declare it. */
 const FORMULA_NS = 'xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2"';
 const STYLES = `${XML_HEADER}<office:document-styles ${ODF_NS_ATTRS} office:version="1.3"><office:styles><style:style style:name="Default" style:family="table-cell"/></office:styles></office:document-styles>`;
@@ -63,9 +64,13 @@ function sheetXml(sheet: Sheet, styleOf: (format: string) => string | undefined,
   let rows = "";
   let row = 0;
   for (const [number, cells] of byRow) {
-    if (number > row + 1) rows += `<table:table-row table:number-rows-repeated="${number - row - 1}"><table:table-cell/></table:table-row>`;
+    if (number > row + 1) {
+      const gap = `<table:table-row table:number-rows-repeated="${number - row - 1}"><table:table-cell/></table:table-row>`;
+      charge(gap.length);
+      rows += gap;
+    }
     let column = 0;
-    rows += `<table:table-row>${cells
+    const inRow = cells
       .map(([at, cell]) => {
         const gap = at > column + 1 ? `<table:table-cell table:number-columns-repeated="${at - column - 1}"/>` : "";
         column = at;
@@ -73,7 +78,9 @@ function sheetXml(sheet: Sheet, styleOf: (format: string) => string | undefined,
         charge(xml.length);
         return xml;
       })
-      .join("")}</table:table-row>`;
+      .join("");
+    charge("<table:table-row></table:table-row>".length);
+    rows += `<table:table-row>${inRow}</table:table-row>`;
     row = number;
   }
   return `<table:table table:name="${esc(sheet.name)}"><table:table-column table:number-columns-repeated="${columns}"/>${rows || "<table:table-row><table:table-cell/></table:table-row>"}</table:table>`;
@@ -87,7 +94,9 @@ export function writeOds(book: Workbook, limits?: Partial<Limits>): WriteResult 
   const formats = new Map<string, string>();
   const styleOf = (format: string): string | undefined => {
     if (!ODS_FORMAT.test(format)) {
-      warnings.add(`the number format "${format}" is not written in ODS`);
+      // A hostile workbook can carry a different format code in every cell; keep the list short.
+      if (warnings.size < MAX_FORMAT_WARNINGS) warnings.add(`the number format "${format}" is not written in ODS`);
+      else warnings.add("more number formats are not written in ODS");
       return undefined;
     }
     if (!formats.has(format)) formats.set(format, `${formats.size + 1}`);
@@ -126,12 +135,21 @@ function formatOfDataStyle(style: XmlElement, warn: (message: string) => void): 
 
 const textOfKid = (el: XmlElement): string => el.children.map((c) => (typeof c === "string" ? c : textOfKid(c))).join("");
 
-function cellText(cell: XmlElement): string {
+/** A `<text:s>` element stands for this many spaces at most. */
+const MAX_SPACES = 1000;
+
+/** The text of a cell. `spaces` is told how many spaces each `<text:s>` stands for, before the string that holds them is made. */
+function cellText(cell: XmlElement, spaces: (count: number, asked: number) => void): string {
   const walk = (el: XmlElement): string =>
     el.children
       .map((c) => {
         if (typeof c === "string") return c.replace(/[ \t\r\n]+/g, " ");
-        if (c.name === "text:s") return "\u0001".repeat(Math.max(1, Math.min(1000, Number(c.attrs["text:c"] ?? 1)) || 1));
+        if (c.name === "text:s") {
+          const asked = Number(c.attrs["text:c"] ?? 1) || 1;
+          const count = Math.max(1, Math.min(MAX_SPACES, asked));
+          spaces(count, asked);
+          return "\u0001".repeat(count);
+        }
         if (c.name === "text:tab") return "\u0002";
         if (c.name === "text:line-break") return "\n";
         return c.name === "text:p" || c.name === "text:h" ? "" : walk(c);
@@ -173,6 +191,11 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   let cellCount = 0;
   // A repeated cell holds the same text in every copy, so each copy counts.
   const chargeText = capped(caps.maxTextChars, `the workbook has more than ${caps.maxTextChars} characters of cell text`);
+  const chargeSpaces = capped(caps.maxTextChars, `the workbook has more than ${caps.maxTextChars} spaces in <text:s> elements`);
+  const spaces = (count: number, asked: number) => {
+    if (asked > MAX_SPACES) warn(`a run of more than ${MAX_SPACES} spaces was shortened`);
+    chargeSpaces(count);
+  };
   const count = (n: number) => {
     cellCount += n;
     if (cellCount > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${caps.maxCells} cells`);
@@ -190,7 +213,7 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
       const n = Number(c.attrs["office:value"]);
       if (Number.isFinite(n)) value = n;
       if (type === "currency") warn("a currency cell was read as a number");
-    } else if (type === "string") value = c.attrs["office:string-value"] ?? cellText(c);
+    } else if (type === "string") value = c.attrs["office:string-value"] ?? cellText(c, spaces);
     else if (type === "boolean") value = c.attrs["office:boolean-value"] === "true";
     else if (type === "date") {
       value = isoToSerial(c.attrs["office:date-value"] ?? "");
@@ -203,6 +226,7 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     let formula: string | undefined;
     const raw = c.attrs["table:formula"];
     if (raw !== undefined) {
+      if (raw.length > MAX_FORMULA) throw new FormatError("LIMIT_EXCEEDED", `a formula is longer than ${MAX_FORMULA} characters`);
       formula = raw.startsWith("of:=") ? fromOpenFormula(raw.slice(4)) : undefined;
       if (formula === undefined) warn("a formula that is not in OpenFormula A1 form was read as its value");
       else if (isBooleanLiteral(formula, value)) formula = undefined;

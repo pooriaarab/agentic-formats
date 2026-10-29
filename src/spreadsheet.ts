@@ -22,6 +22,9 @@ export function isoToSerial(iso: string): number | undefined {
   return Number.isNaN(ms) ? undefined : (ms - EPOCH) / DAY_MS;
 }
 
+/** A formula longer than this is refused when it is read and when it is written. Formula conversion is not linear in the worst case. */
+export const MAX_FORMULA = 8192;
+
 const BAD_SHEET_CHARS = /[[\]:*?/\\\u0000-\u001f]/;
 
 /** Refuse a workbook that no writer could write: bad sheet names, cells off the grid, numbers that are not finite. */
@@ -42,7 +45,7 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
       if (!parseRef(ref)) bad(`"${ref}" is not a cell reference on the sheet grid`);
       if (++cells > limits.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${limits.maxCells} cells`);
       if (typeof cell.value === "number" && !Number.isFinite(cell.value)) bad(`${sheet.name}!${ref} holds a number that is not finite`);
-      if (cell.formula !== undefined && (typeof cell.formula !== "string" || cell.formula.length > 8192)) bad(`${sheet.name}!${ref} holds a formula that is not usable`);
+      if (cell.formula !== undefined && (typeof cell.formula !== "string" || cell.formula.length > MAX_FORMULA)) bad(`${sheet.name}!${ref} holds a formula that is not usable`);
       // A string that many cells point to is written once for each cell, so it counts once for each cell.
       chargeText((typeof cell.value === "string" ? cell.value.length : 0) + (cell.formula?.length ?? 0));
     }
