@@ -32,11 +32,14 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
   const bad = (message: string): never => {
     throw new FormatError("INVALID_MODEL", message);
   };
+  if (!Array.isArray(book?.sheets)) bad("a workbook needs a list of sheets");
   if (book.sheets.length === 0) bad("a workbook needs at least one sheet");
   const names = new Set<string>();
   let cells = 0;
   const chargeText = capped(limits.maxTextChars, `the workbook has more than ${limits.maxTextChars} characters of cell text`);
   for (const sheet of book.sheets) {
+    if (typeof sheet !== "object" || sheet === null || typeof sheet.name !== "string") bad("a sheet needs a name that is a string");
+    if (typeof sheet.cells !== "object" || sheet.cells === null) bad(`the sheet "${sheet.name}" needs cells`);
     const { name } = sheet;
     if (!name || name.length > 31 || BAD_SHEET_CHARS.test(name) || name.startsWith("'") || name.endsWith("'")) bad(`"${name}" is not a usable sheet name`);
     if (names.has(name.toLowerCase())) bad(`the sheet name "${name}" is used twice`);

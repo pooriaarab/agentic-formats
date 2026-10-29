@@ -181,7 +181,9 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   collect(content);
   if (stylesPart) collect(stylesPart);
   const formatOfStyle = (name: string | undefined): string | undefined => {
-    for (let n = name, hops = 0; n; n = cellStyles.get(n)?.parent, hops++) {
+    const seen = new Set<string>();
+    for (let n = name, hops = 0; n && !seen.has(n); n = cellStyles.get(n)?.parent, hops++) {
+      seen.add(n);
       if (hops >= caps.maxStyleDepth) throw new FormatError("LIMIT_EXCEEDED", `a style has more than ${caps.maxStyleDepth} parents`);
       const data = cellStyles.get(n)?.data;
       if (data !== undefined) return dataFormats.get(data);

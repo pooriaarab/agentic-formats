@@ -134,6 +134,7 @@ describe.each(formats)("%s: write then read", (format) => {
     refuse(sheet("S", { A1: { value: 1 }, A2: { value: 2 } }), { maxCells: 1 });
     for (const cell of [{ value: 1, format: 123 }, { value: {} }, { value: [1] }, null, 7]) refuse(sheet("S", { A1: cell as never }));
     expect(() => write(sheet("S", { A1: { value: 1, format: "constructor" } }))).not.toThrow();
+    for (const book of [{ sheets: "x" }, {}, { sheets: [null] }, { sheets: [{ name: ["a"], cells: {} }] }, { sheets: [{ name: 5, cells: {} }] }, { sheets: [{ name: "S", cells: null }] }, { sheets: [{ name: "S" }] }]) refuse(book as never);
   });
 
   test("11 a model whose cells share one big string is refused before any output is built", () => {
@@ -352,6 +353,15 @@ describe("hostile files", () => {
     expect(fromOpenFormula("SUM([$'My Sheet'.A1:.B2])")).toBe("SUM('My Sheet'!A1:B2)");
     expect(fromOpenFormula("[.A1:.B2:.C3]")).toBeUndefined();
     expect(fromOpenFormula("[[.A1]")).toBe("[A1");
+  });
+
+  test("12 a cell style chain past the depth cap is refused, and a loop in the parents ends the walk", () => {
+    const style = (name: string, parent?: string) => `<style:style xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" style:name="${name}" style:family="table-cell"${parent ? ` style:parent-style-name="${parent}"` : ""}/>`;
+    const withCell = (styles: string, used: string) => ods(`${styles}${table(`<table:table-row><table:table-cell table:style-name="${used}" office:value-type="float" office:value="1"/></table:table-row>`)}`);
+    const chain = Array.from({ length: 60 }, (_, i) => style(`s${i}`, i ? `s${i - 1}` : undefined)).join("");
+    expect(() => readOds(withCell(chain, "s59"))).toThrow(/a style has more than 50 parents/);
+    expect(readOds(withCell(chain, "s10")).model.sheets[0].cells.A1).toMatchObject({ value: 1 });
+    expect(readOds(withCell(style("a", "b") + style("b", "a"), "a")).model.sheets[0].cells.A1).toMatchObject({ value: 1 });
   });
 
   test("12 text:s runs in a cell count against the text cap before the string is made", () => {
