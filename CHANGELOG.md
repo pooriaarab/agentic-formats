@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The XLSX reader returns at most 50 warnings and one "N more warnings" line, and it names more dropped content: named ranges, hidden sheets, charts and comments, conditional formats, array formulas, rich text, values it cannot read, and missing styles.
+- The XLSX reader returns at most 50 warnings that quote a name from the file, and one "N more warnings" line, and it names more dropped content: named ranges, print areas, hidden sheets, charts and comments, conditional formats, array formulas, rich text, values it cannot read, and missing styles.
 
 ## 0.1.0
 

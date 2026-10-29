@@ -115,10 +115,15 @@ export function writeXlsx(book: Workbook, limits?: Partial<Limits>): WriteResult
 
 // ---------- read ----------
 
-/** Most distinct warnings a read returns; one more line says how many were left out. */
-const MAX_WARNINGS = 50;
+/** Most warnings that quote a name from the file; one more line says how many were left out. */
+const MAX_NAMED_WARNINGS = 50;
 /** A sheet name in a warning is cut, as a name has no length limit in a hostile file. */
-const shortName = (name: string | undefined): string => (name && name.length > 60 ? `${name.slice(0, 60)}...` : (name ?? ""));
+const shortName = (name: string | undefined): string => {
+  if (!name || name.length <= 60) return name ?? "";
+  // Do not cut a pair of surrogates in two.
+  const end = /[\ud800-\udbff]/.test(name[59]) ? 59 : 60;
+  return `${name.slice(0, end)}...`;
+};
 
 const BUILTIN_BY_ID: Record<number, string> = { 1: "0", 2: "0.00", 3: "#,##0", 4: "#,##0.00", 9: "0%", 10: "0.00%", 14: "yyyy-mm-dd" };
 
@@ -143,16 +148,20 @@ const hasRuns = (si: XmlElement): boolean => elementsOf(si).some((k) => k.name =
 export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult<Workbook> {
   const caps = withLimits(limits);
   const pkg = readOoxmlPackage(bytes, caps, "XLSX", SML);
-  // A hostile file can name thousands of sheets or number formats: keep a bounded list and count the rest.
+  // A message that is fixed text is kept: there are few of them. A message that quotes a name from the file is
+  // capped, as a hostile file can name thousands of sheets or number formats; the rest is counted once each.
   const warnings = new Set<string>();
+  let named = 0;
   let unlisted = 0;
-  const warn = (message: string) => {
-    if (warnings.has(message)) return;
-    if (warnings.size < MAX_WARNINGS) warnings.add(message);
-    else unlisted++;
+  const warn = (message: string) => warnings.add(message);
+  const warnNamed = (message: string) => {
+    if (named < MAX_NAMED_WARNINGS && !warnings.has(message)) {
+      named++;
+      warnings.add(message);
+    } else if (!warnings.has(message)) unlisted++;
   };
   const workbook = pkg.parse(pkg.mainPart);
-  if (childOf(workbook, "definedNames")) warn("named ranges were not read");
+  if (elementsOf(childOf(workbook, "definedNames")).length) warn("named ranges, print areas, or filters were not read");
   if (childOf(workbook, "workbookPr")?.attrs.date1904 === "1") warn("the 1904 date system: dates read 1462 days early");
   const workbookRels = pkg.rels(pkg.mainPart);
   const partOf = (kind: string): string | undefined => [...workbookRels.values()].find((r) => r.kind === kind && !r.external)?.target;
@@ -173,7 +182,7 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
       const id = Number(xf.attrs.numFmtId ?? 0);
       if (codes.has(String(id))) formatOfStyle.push(canonicalFormat(codes.get(String(id))!));
       else {
-        if (id !== 0 && !BUILTIN_BY_ID[id]) warn(`the built-in number format ${id} was not read`);
+        if (id !== 0 && !BUILTIN_BY_ID[id]) warnNamed(`the built-in number format ${id} was not read`);
         formatOfStyle.push(BUILTIN_BY_ID[id]);
       }
     }
@@ -187,12 +196,12 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   for (const entry of elementsOf(childOf(workbook, "sheets"))) {
     const rel = workbookRels.get(entry.attrs["r:id"] ?? "");
     if (!rel || rel.external || rel.kind !== "worksheet") {
-      warn(`the sheet "${shortName(entry.attrs.name)}" is not a worksheet: not imported`);
+      warnNamed(`the sheet "${shortName(entry.attrs.name)}" is not a worksheet: not imported`);
       continue;
     }
     // A part that two sheet entries name would be parsed and copied twice.
     if (readParts.has(rel.target)) {
-      warn(`the sheet "${shortName(entry.attrs.name)}" shares its worksheet part with an earlier sheet: not imported`);
+      warnNamed(`the sheet "${shortName(entry.attrs.name)}" shares its worksheet part with an earlier sheet: not imported`);
       continue;
     }
     readParts.add(rel.target);
@@ -217,7 +226,11 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
           const text = shared[Number(raw)];
           if (text === undefined) warn("a cell points to a missing shared string");
           else value = text;
-        } else if (type === "inlineStr") value = stringOf(childOf(c, "is") ?? c);
+        } else if (type === "inlineStr") {
+          const is = childOf(c, "is");
+          value = stringOf(is ?? c);
+          if (is && hasRuns(is)) warn("text styles inside a cell were not read");
+        }
         else if (type === "str") value = raw;
         else if (type === "b") value = raw === "1";
         else if (type === "e") {

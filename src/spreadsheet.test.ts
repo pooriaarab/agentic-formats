@@ -424,11 +424,29 @@ describe("hostile files", () => {
     const withSheet = (add: string) => patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace("</worksheet>", `${add}</worksheet>`));
     expect(warnings(withSheet('<drawing r:id="rId9"/>'))).toEqual(["charts, images, or comments were not read"]);
     expect(warnings(withSheet('<conditionalFormatting sqref="A1"/>'))).toEqual(["conditional formats or data validation rules were not read"]);
-    expect(warnings(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", '</sheets><definedNames><definedName name="n">S!A1</definedName></definedNames>')))).toEqual(["named ranges were not read"]);
+    expect(warnings(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", '</sheets><definedNames><definedName name="n">S!A1</definedName></definedNames>')))).toEqual(["named ranges, print areas, or filters were not read"]);
     expect(warnings(patch(one, "xl/workbook.xml", (x) => sheetXml(x, ["<sheet ", '<sheet state="hidden" ']))).slice(0, 1)).toEqual(["a hidden sheet was read as visible"]);
     expect(warnings(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1"><v>abc</v>')))).toEqual(["a cell value that is not a number or a date was not read"]);
     expect(warnings(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1"', 'r="A1" s="99"')))).toEqual(["a cell points to a missing style"]);
     expect(warnings(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1"><f t="array" ref="A1">1+1</f><v>2</v>')))).toEqual(["an array formula or data table was read as a plain formula"]);
+  });
+
+  test("13 rich text in an inline string is named in a warning", () => {
+    const read = readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('<is><t xml:space="preserve">x</t></is>', "<is><r><rPr><b/></rPr><t>x</t></r></is>")));
+    expect(read.model).toEqual(sheet("S", { A1: { value: "x" } }));
+    expect(read.warnings).toEqual(["text styles inside a cell were not read"]);
+  });
+
+  test("13 names past the cap never hide a fixed warning, and a repeated fixed warning is one line", () => {
+    const rels = Array.from({ length: 60 }, (_, i) => `<Relationship Id="rIdX${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="c${i}.xml"/>`).join("");
+    const entries = Array.from({ length: 60 }, (_, i) => `<sheet name="c${i}" sheetId="${i + 10}" r:id="rIdX${i}"/>`).join("");
+    const cells = Array.from({ length: 1000 }, (_, i) => `<c r="B${i + 1}" s="99"><v>1</v></c>`).join("");
+    const bytes = patch(patch(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", `${entries}</sheets>`)), "xl/_rels/workbook.xml.rels", (x) => x.replace("</Relationships>", `${rels}</Relationships>`)), "xl/worksheets/sheet1.xml", (x) => x.replace("</row>", `${cells}</row>`).replace("</sheetData>", "</sheetData><mergeCells/>"));
+    const { warnings } = readXlsx(bytes);
+    expect(warnings).toContain("a cell points to a missing style");
+    expect(warnings).toContain("merged cells were read as single cells");
+    expect(warnings.filter((w) => w === "a cell points to a missing style")).toHaveLength(1);
+    expect(warnings).toContain("10 more warnings");
   });
 
   test("13 rich text runs in a shared string are named in a warning", () => {
@@ -444,6 +462,7 @@ describe("hostile files", () => {
     const read = readXlsx(patch(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", `${entries}</sheets>`)), "xl/_rels/workbook.xml.rels", (x) => x.replace("</Relationships>", `${Array.from({ length: 300 }, (_, i) => `<Relationship Id="rIdX${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="c${i}.xml"/>`).join("")}</Relationships>`)));
     expect(read.warnings).toHaveLength(51);
     expect(read.warnings[50]).toBe("250 more warnings");
+    expect(read.warnings.slice(0, 50).every((w) => w.startsWith("the sheet "))).toBe(true);
     expect(Math.max(...read.warnings.map((w) => w.length))).toBeLessThan(120);
   });
 
