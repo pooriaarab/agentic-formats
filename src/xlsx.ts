@@ -1,7 +1,7 @@
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { parseRef, refOf, sortedRefs, type Cell, type CellValue, type ReadResult, type Sheet, type Workbook, type WriteResult } from "./model.js";
 import { REL_NS, XML_HEADER, contentTypesXml, readOoxmlPackage, relsXml } from "./ooxml.js";
-import { MAX_FORMULA, checkWorkbook, hasContent, isBooleanLiteral, isoToSerial } from "./spreadsheet.js";
+import { MAX_FORMULA, checkWorkbook, escapeBound, hasContent, isBooleanLiteral, isoToSerial } from "./spreadsheet.js";
 import { childOf, elementsOf, textOf, xmlEscape as esc, type XmlElement } from "./xml.js";
 import { writeZip } from "./zip.js";
 
@@ -46,6 +46,12 @@ export function writeXlsx(book: Workbook, limits?: Partial<Limits>): WriteResult
     for (const ref of sortedRefs(sheet)) {
       if (!hasContent(sheet.cells[ref])) continue;
       const row = parseRef(ref)!.row;
+      // Escaping grows a string up to six times, so the worst case counts before the string exists.
+      const value = sheet.cells[ref].value;
+      if (typeof value === "string") {
+        chargeSheet(escapeBound(value));
+        chargeTotal(escapeBound(value));
+      }
       const xml = cellXml(ref, sheet.cells[ref], xf);
       chargeSheet(xml.length);
       chargeTotal(xml.length);

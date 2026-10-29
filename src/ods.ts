@@ -1,8 +1,8 @@
 import { toOpenFormula, fromOpenFormula } from "./formula.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { parseRef, refOf, sortedRefs, type Cell, type CellValue, type ReadResult, type Sheet, type Workbook, type WriteResult } from "./model.js";
-import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, spaced, writeOdfPackage } from "./odf.js";
-import { MAX_FORMULA, ODS_FORMAT, checkWorkbook, hasContent, isBooleanLiteral, isDateFormat, isoToSerial, serialToIso } from "./spreadsheet.js";
+import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, spaced, spacedBound, writeOdfPackage } from "./odf.js";
+import { MAX_FORMULA, ODS_FORMAT, escapeBound, checkWorkbook, hasContent, isBooleanLiteral, isDateFormat, isoToSerial, serialToIso } from "./spreadsheet.js";
 import { childOf, elementsOf, xmlEscape as esc, type XmlElement } from "./xml.js";
 
 export const ODS_MIME = "application/vnd.oasis.opendocument.spreadsheet";
@@ -74,6 +74,8 @@ function sheetXml(sheet: Sheet, styleOf: (format: string) => string | undefined,
       .map(([at, cell]) => {
         const gap = at > column + 1 ? `<table:table-cell table:number-columns-repeated="${at - column - 1}"/>` : "";
         column = at;
+        // A newline grows to 18 characters, and a string cell is written twice when it has a formula, so the worst case counts first.
+        if (typeof cell.value === "string") charge(spacedBound(cell.value) + escapeBound(cell.value) + 300);
         const xml = gap + cellXml(cell, styleOf);
         charge(xml.length);
         return xml;

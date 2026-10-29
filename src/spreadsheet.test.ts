@@ -355,6 +355,15 @@ describe("hostile files", () => {
     expect(fromOpenFormula("[[.A1]")).toBe("[A1");
   });
 
+  test("12 one cell of eight million newlines is charged before its XML is made", () => {
+    const started = Date.now();
+    expect(() => writeOds(sheet("S", { A1: { value: "\n".repeat(8_000_000) } }))).toThrow(/while it is written/);
+    expect(Date.now() - started).toBeLessThan(3000);
+    // A quote becomes six characters in XLSX, so five million of them are 30 MB.
+    expect(() => writeXlsx(sheet("S", { A1: { value: '"'.repeat(5_000_000) } }), { maxEntryBytes: 20_000_000 })).toThrow(/while it is written/);
+    expect(readOds(writeOds(sheet("S", { A1: { value: "a\nb\tc & d" } })).bytes).model.sheets[0].cells.A1).toMatchObject({ value: "a\nb\tc & d" });
+  });
+
   test("12 many sheets that each repeat a column are refused fast, and a column style still reaches its cells", { timeout: 60_000 }, () => {
     const wide = `<table:table table:name="W"><table:table-column table:number-columns-repeated="16384"/></table:table>`;
     const started = Date.now();

@@ -59,6 +59,16 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
   }
 }
 
+/** The most characters `esc(text)` can make, found without making them: the text, and five more for each character it escapes. */
+export function escapeBound(text: string): number {
+  let n = text.length;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "&" || c === "<" || c === ">" || c === '"' || c === "\r") n += 5;
+  }
+  return n;
+}
+
 /** A cell with something to write. */
 export const hasContent = (cell: Cell): boolean => cell.value !== undefined || cell.formula !== undefined || cell.format !== undefined;
 
