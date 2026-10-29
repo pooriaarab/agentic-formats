@@ -528,5 +528,12 @@ describe("PDF writer, review round 4", () => {
   test("2 a lone surrogate in a title is replaced", () => {
     expect(latin(writePdf({ title: "a\ud800b", blocks: [] }).bytes)).toContain("/Title <FEFF0061fffd0062>");
   });
+
+  test("7 a text box with millions of empty paragraphs hits the work cap, and a JPEG that declares a huge size is refused", () => {
+    const deck = { width: 100, height: 100, slides: [{ shapes: [{ type: "textbox" as const, frame: { x: 0, y: 0, width: 50, height: 50 }, paragraphs: Array.from({ length: 2000 }, () => [] as never[]) }] }] };
+    expect(() => writePdf(deck, { maxCells: 1000 })).toThrow(FormatError);
+    const jpeg = Uint8Array.of(0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 0xff, 0xff, 0xff, 0xff, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xd9);
+    expect(() => writePdf({ blocks: [{ type: "paragraph", content: [{ type: "image", data: jpeg, mime: "image/jpeg" }] }] })).toThrow(/unpack/);
+  });
 });
 

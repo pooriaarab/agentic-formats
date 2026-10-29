@@ -94,7 +94,10 @@ class Pdf {
   /** Bytes of pixels unpacked so far, for every image together. */
   decoded: (n: number) => void;
   opBytes: (n: number) => void;
+  /** Blocks, paragraphs, and runs laid out, counted against `maxCells`. */
+  work: (n: number) => void;
   constructor(readonly caps: Limits) {
+    this.work = capped(caps.maxCells, `the file has more than ${caps.maxCells} paragraphs and runs`);
     this.opBytes = capped(caps.maxTotalBytes, `the page operators pass ${caps.maxTotalBytes} bytes`);
     this.decoded = capped(caps.maxTotalBytes, `the images unpack to more than ${caps.maxTotalBytes} bytes`);
     this.charge = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} characters of text`);
@@ -172,6 +175,10 @@ class Pdf {
     const img: Img = { name: `Im${id}`, id };
     if (sniffed.mime === "image/jpeg") {
       const comps = jpegComponents(data);
+      // A viewer unpacks the picture whatever its file size, so its declared size counts like a PNG's.
+      const unpacked = sniffed.width * sniffed.height * Math.max(comps, 1);
+      if (unpacked > this.caps.maxEntryBytes) throw new FormatError("LIMIT_EXCEEDED", "an image is larger than the entry limit when unpacked");
+      this.decoded(unpacked);
       if (comps !== 1 && comps !== 3) return skip("is a JPEG of a kind the PDF writer does not embed (CMYK, 12-bit, lossless, or arithmetic coded)");
       this.set(id, `<</Type /XObject /Subtype /Image /Width ${sniffed.width} /Height ${sniffed.height} /ColorSpace /${comps === 1 ? "DeviceGray" : "DeviceRGB"} /BitsPerComponent 8 /Filter /DCTDecode>>`, data);
       return img;
@@ -521,13 +528,23 @@ function writeDeck(deck: Deck, pdf: Pdf): void {
         if (img) page.ops.push(`q ${num(width)} 0 0 ${num(height)} ${num(x)} ${num(py)} cm /${img.name} Do Q`);
       } else {
         // The model holds no font size: take the largest of 18 down to 8 points that fits the frame.
-        const atoms = shape.paragraphs.map((runs) => atomsOf(pdf, runs, false));
+        // Each paragraph and run is laid out in each place the model holds it, so each counts against the same cap as a document node.
+        pdf.work(1 + shape.paragraphs.length);
+        const atoms = shape.paragraphs.map((runs) => (pdf.work(runs.length), atomsOf(pdf, runs, false)));
         let size = 18;
         let lines: Line[] = [];
         let cut = { cut: false };
         for (; size >= 8; size--) {
           cut = { cut: false };
-          lines = atoms.flatMap((a) => wrap(a, size, width, Math.floor((height + 0.01) / (size * 1.2)) + 1, cut));
+          const room = Math.floor((height + 0.01) / (size * 1.2)) + 1;
+          lines = [];
+          for (let k = 0; k < atoms.length; k++) {
+            if (lines.length >= room) {
+              if (atoms.slice(k).some((a) => a.some((x) => x.text.trim()))) cut.cut = true;
+              break;
+            }
+            for (const l of wrap(atoms[k], size, width, room - lines.length, cut)) lines.push(l);
+          }
           if (lines.length * size * 1.2 <= height + 0.01) break;
         }
         size = Math.max(size, 8);
