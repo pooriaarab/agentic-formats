@@ -431,6 +431,7 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
 
   const notes = new Map<string, Footnote>();
   /** An image part is shared by every drawing that names it, so each drawing counts its bytes. */
+  const chargeRuns = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} characters of run text and link targets`);
   const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
   /** Notes already placed. A note belongs to one reference; a repeat would copy its whole content again. */
   const placed = new Set<string>();
@@ -462,7 +463,12 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
           return elementsOf(c).flatMap((k): Inline[] => {
             // A viewer underlines a link by itself, so a link run carries no underline mark.
             const shown = href ? runMarks.filter((m) => m !== "underline") : runMarks;
-            const text = (value: string): Inline[] => (value ? [{ type: "text", text: value, ...(shown.length ? { marks: shown } : {}), ...(href ? { href } : {}) }] : []);
+            const text = (value: string): Inline[] => {
+              if (!value) return [];
+              // A link target is one string in a shared part, but each run that names it carries it, so each run counts it.
+              chargeRuns(value.length + (href?.length ?? 0));
+              return [{ type: "text", text: value, ...(shown.length ? { marks: shown } : {}), ...(href ? { href } : {}) }];
+            };
             switch (k.name) {
               case "w:t":
                 return text(textOf(k));

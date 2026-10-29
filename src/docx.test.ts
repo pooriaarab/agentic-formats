@@ -176,6 +176,19 @@ describe("hostile files", () => {
   });
 });
 
+describe("a link target that many runs share", () => {
+  test("12 each run that names a shared target counts it, so a small file cannot make a model of gigabytes", { timeout: 60_000 }, () => {
+    const base = writeDocx({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "a", href: "https://example.org/x" }, text("b")] }] }).bytes;
+    const target = `https://example.org/${"u".repeat(100_000)}`;
+    const pair = `<w:hyperlink r:id="rId4"><w:r><w:t>a</w:t></w:r></w:hyperlink><w:r><w:t>b</w:t></w:r>`;
+    const make = (pairs: number) => patch(patch(base, "word/_rels/document.xml.rels", (x) => x.replace(/Target="https:\/\/example\.org\/x"/, `Target="${target}"`)), "word/document.xml", (x) => x.replace(/<w:p>.*<\/w:p>/, `<w:p>${pair.repeat(pairs)}</w:p>`));
+    expect(readDocx(make(50)).model.blocks).toHaveLength(1);
+    const started = Date.now();
+    expect(() => readDocx(make(200))).toThrow(/characters of run text and link targets/);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
 describe("a link inside a footnote", () => {
   const doc: TextDoc = { blocks: [{ type: "paragraph", content: [text("claim"), { type: "footnote", content: [text("see "), { type: "text", text: "source", href: "https://example.org/n" }] }] }] };
 
