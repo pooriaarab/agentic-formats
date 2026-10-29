@@ -164,12 +164,12 @@ describe("slow files", () => {
     const deck: Deck = { width: 720, height: 405, slides: Array.from({ length: 500 }, (_, i) => slideOf(`slide ${i}`)) };
     const placeholders = Array.from(
       { length: 10_000 },
-      (_, i) => `<p:sp><p:nvSpPr><p:cNvPr id="${i + 2}" name="P${i}"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="${i}"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${i * 12700}" y="0"/><a:ext cx="12700" cy="12700"/></a:xfrm></p:spPr></p:sp>`,
+      (_, i) => `<p:sp><p:nvSpPr><p:cNvPr id="${i + 2}" name="P${i}"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="${i}"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${Math.floor(i / 2) * 12700}" y="0"/><a:ext cx="12700" cy="12700"/></a:xfrm></p:spPr></p:sp>`,
     ).join("");
     // The master holds 10,000 placeholders of its own (idx 10000 and up); odd slides take theirs from it.
     const masterPlaceholders = placeholders
       .replaceAll(/idx="(\d+)"/g, (_m, i: string) => `idx="${Number(i) + 10_000}"`)
-      .replaceAll(/<a:off x="(\d+)"/g, (_m, x: string) => `<a:off x="${Number(x) + 10_000 * 12_700}"`);
+      .replaceAll(/<a:off x="(\d+)"/g, (_m, x: string) => `<a:off x="${Number(x) + 8000 * 12_700}"`);
     const entries = Object.entries(files(writePptx(deck).bytes)).map(([name, data]) => {
       if (name === "ppt/slideLayouts/slideLayout1.xml") return { name, data: strFromU8(data).replace("</p:spTree>", `${placeholders}</p:spTree>`) };
       if (name === "ppt/slideMasters/slideMaster1.xml") return { name, data: strFromU8(data).replace("</p:spTree>", `${masterPlaceholders}</p:spTree>`) };
@@ -185,8 +185,8 @@ describe("slow files", () => {
     // Parsing each shared part once takes a few seconds; parsing it for every slide took 174 seconds.
     expect(Date.now() - started).toBeLessThan(20_000);
     expect(read.model.slides).toHaveLength(500);
-    expect(read.model.slides[0].shapes[0]).toMatchObject({ frame: { x: 9999, y: 0 } });
-    expect(read.model.slides[1].shapes[0]).toMatchObject({ frame: { x: 19_999, y: 0 } });
+    expect(read.model.slides[0].shapes[0]).toMatchObject({ frame: { x: 4999, y: 0 } });
+    expect(read.model.slides[1].shapes[0]).toMatchObject({ frame: { x: 12_999, y: 0 } });
     expect(read.warnings).toEqual([]);
   });
 
@@ -200,6 +200,30 @@ describe("slow files", () => {
     const notes = readPptx(shared);
     expect(notes.model.slides.map((s) => s.notes)).toEqual(["notes one", undefined]);
     expect(notes.warnings).toEqual(["a notes page that two slides share: not imported"]);
+  });
+
+  test("11 a run of newlines and a note of newlines are charged as the XML they become", { timeout: 60_000 }, () => {
+    const run = { type: "text" as const, text: "\n".repeat(1_000_000) };
+    const textbox = { type: "textbox" as const, frame, paragraphs: [Array.from({ length: 6 }, () => run)] };
+    const notes = "\n".repeat(1_000_000);
+    for (const write of [writePptx, writeOdp]) {
+      for (const deck of [
+        { width: 720, height: 405, slides: [{ shapes: [textbox] }] },
+        { width: 720, height: 405, slides: Array.from({ length: 6 }, () => ({ shapes: [], notes })) },
+      ]) {
+        expect(() => write(deck as Deck, { maxTotalBytes: 40_000_000 })).toThrow(/passes 40000000 bytes while it is written/);
+      }
+    }
+  });
+
+  test("11 a size or position that is not a number, or is out of bounds, is not read from a PPTX", () => {
+    const base = writePptx({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
+    const box = (attr: "off x" | "ext cx", value: string) => (x: string) => x.replace(attr === "off x" ? /(<p:spPr><a:xfrm><a:off x=")\d+"/ : /(<p:spPr><a:xfrm><a:off [^>]*\/><a:ext cx=")\d+"/, `$1${value}"`);
+    for (const [attr, value] of [["off x", "abc"], ["ext cx", "-127000"], ["ext cx", "1e30"]] as const) {
+      const read = readPptx(patch(base, "ppt/slides/slide1.xml", box(attr, value)));
+      expect(read.warnings, `${attr} ${value}`).toEqual(["a shape without a position was placed at the top left corner"]);
+    }
+    expect(() => readPptx(patch(base, "ppt/presentation.xml", (x) => x.replace(/<p:sldSz cx="\d+"/, '<p:sldSz cx="999999999999999"')))).toThrow(/no slide size/);
   });
 
   test("11 a connector with no position is reported", () => {

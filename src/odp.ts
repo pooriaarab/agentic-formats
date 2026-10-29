@@ -67,6 +67,13 @@ function shapeXmlOf(shape: SlideShape, out: Out): string {
   }
 }
 
+/** The paragraphs of a slide's notes, one for each line. A newline grows to a paragraph, so the XML counts as it is made. */
+function noteLines(notes: string, out: Out): string {
+  const xml = notes.split("\n").map((line) => `<text:p>${esc(line)}</text:p>`).join("");
+  out.bytes(xml.length);
+  return xml;
+}
+
 /** Write a deck as an OpenDocument presentation (.odp). */
 export function writeOdp(deck: Deck, limits?: Partial<Limits>): WriteResult {
   const caps = withLimits(limits);
@@ -82,7 +89,7 @@ export function writeOdp(deck: Deck, limits?: Partial<Limits>): WriteResult {
   const pages = deck.slides.map((slide, i) => {
     const notes = slide.notes
       ? `<presentation:notes draw:style-name="dp1"><draw:page-thumbnail draw:layer="layout" draw:page-number="${i + 1}" presentation:class="page" ${at({ x: 0, y: 0, width: deck.width, height: deck.height })}/>` +
-        `<draw:frame presentation:style-name="prn" draw:layer="layout" presentation:class="notes" presentation:user-transformed="true" ${at({ x: 36, y: deck.height + 36, width: deck.width - 72, height: deck.height })}><draw:text-box>${slide.notes.split("\n").map((line) => `<text:p>${esc(line)}</text:p>`).join("")}</draw:text-box></draw:frame></presentation:notes>`
+        `<draw:frame presentation:style-name="prn" draw:layer="layout" presentation:class="notes" presentation:user-transformed="true" ${at({ x: 36, y: deck.height + 36, width: deck.width - 72, height: deck.height })}><draw:text-box>${noteLines(slide.notes, out)}</draw:text-box></draw:frame></presentation:notes>`
       : "";
     return `<draw:page draw:name="page${i + 1}" draw:style-name="dp1" draw:master-page-name="Default">${slide.shapes.map((s) => shapeXml(s, out)).join("")}${notes}</draw:page>`;
   });

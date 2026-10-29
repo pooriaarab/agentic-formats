@@ -1,4 +1,4 @@
-import { checkDeck, tenth } from "./deck.js";
+import { MAX_POINTS, checkDeck, tenth } from "./deck.js";
 import { sniffImage } from "./image.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { MARKS, normalizeInline, type Deck, type Frame, type Inline, type Mark, type ReadResult, type Slide, type SlideShape, type TextRun, type WriteResult } from "./model.js";
@@ -69,10 +69,13 @@ function runXml(run: TextRun, out: SlideOut): string {
   }
   // Every run names its font: LibreOffice gives a run with no font the font of the run before it.
   const code = marks.includes("code") ? '<a:latin typeface="Courier New"/><a:cs typeface="Courier New"/>' : '<a:latin typeface="Calibri"/><a:cs typeface="Calibri"/>';
-  return run.text
+  const xml = run.text
     .split(/(\n)/)
     .map((piece) => (piece === "\n" ? "<a:br><a:rPr lang=\"en-US\" sz=\"1800\"/></a:br>" : piece ? `<a:r><a:rPr ${attrs}>${code}${link}</a:rPr><a:t>${esc(piece)}</a:t></a:r>` : ""))
     .join("");
+  // A newline grows more than forty times, so each run counts before the next one is made.
+  out.bytes(xml.length);
+  return xml;
 }
 
 function shapeXml(shape: SlideShape, out: SlideOut): string {
@@ -147,6 +150,7 @@ export function writePptx(deck: Deck, limits?: Partial<Limits>): WriteResult {
     overrides[`ppt/slides/slide${n}.xml`] = `${PML}.slide+xml`;
     if (slide.notes) {
       const paragraphs = slide.notes.split("\n").map((line) => `<a:p>${line ? `<a:r><a:rPr lang="en-US"/><a:t>${esc(line)}</a:t></a:r>` : '<a:endParaRPr lang="en-US"/>'}</a:p>`).join("");
+      chargeBytes(paragraphs.length);
       entries.push({
         name: `ppt/notesSlides/notesSlide${n}.xml`,
         data:
@@ -212,7 +216,7 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   const size = childOf(presentation, "p:sldSz");
   const width = Number(size?.attrs.cx) / EMU;
   const height = Number(size?.attrs.cy) / EMU;
-  if (!(width > 0 && height > 0)) throw new FormatError("INVALID_FILE", "the PPTX file has no slide size");
+  if (!(width > 0 && height > 0 && width <= MAX_POINTS && height <= MAX_POINTS)) throw new FormatError("INVALID_FILE", "the PPTX file has no slide size");
 
   const kindTarget = (partRels: ReturnType<typeof pkg.rels>, kind: string) => [...partRels.values()].find((r) => r.kind === kind && !r.external)?.target;
   const relTarget = (part: string, kind: string) => kindTarget(pkg.rels(part), kind);
@@ -224,7 +228,11 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   const frameFrom = (xf: XmlElement | undefined): Frame | undefined => {
     const off = childOf(xf, "a:off");
     const ext = childOf(xf, "a:ext");
-    return off && ext ? { x: tenth(Number(off.attrs.x) / EMU), y: tenth(Number(off.attrs.y) / EMU), width: tenth(Number(ext.attrs.cx) / EMU), height: tenth(Number(ext.attrs.cy) / EMU) } : undefined;
+    if (!off || !ext) return undefined;
+    const frame = { x: tenth(Number(off.attrs.x) / EMU), y: tenth(Number(off.attrs.y) / EMU), width: tenth(Number(ext.attrs.cx) / EMU), height: tenth(Number(ext.attrs.cy) / EMU) };
+    // A position that is not a number, or a size that is negative or past the model's bound, is not read.
+    const usable = [frame.x, frame.y].every((n) => Number.isFinite(n) && Math.abs(n) <= MAX_POINTS) && [frame.width, frame.height].every((n) => Number.isFinite(n) && n >= 0 && n <= MAX_POINTS);
+    return usable ? frame : undefined;
   };
 
   /** Where each placeholder of a layout or master sits, by placeholder key; the first one with a position wins. A part is parsed once, however many slides use it. */

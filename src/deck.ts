@@ -3,7 +3,7 @@ import type { Deck, Frame, TextRun } from "./model.js";
 
 export const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 /** The size of a deck, a slide, or a shape never goes past 22 inches times 10. */
-const MAX_POINTS = 15_840;
+export const MAX_POINTS = 15_840;
 const bad = (message: string): never => {
   throw new FormatError("INVALID_MODEL", message);
 };

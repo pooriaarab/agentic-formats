@@ -101,6 +101,8 @@ export interface RunContext {
   warnings: Set<string>;
   /** Counts the text of each run and the length of each link as it is written, so a model that holds one string many times stops at the cap. */
   charge: (chars: number) => void;
+  /** Counts the XML of each run as it is made, before the runs of a paragraph are joined. */
+  bytes: (length: number) => void;
 }
 
 /** The automatic styles for the spans that `runXml` named. */
