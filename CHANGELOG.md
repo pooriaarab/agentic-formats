@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A seeded fuzz test runs every reader and writer. `writeOdt` and `writeDocx` now throw `FormatError` (`INVALID_MODEL`) for a model with a wrong-typed block list, heading level, or block or inline type, not a `TypeError`.
 - Output files are written to a temporary file and renamed, so a failed write keeps the old file.
 
 ## 0.1.0
