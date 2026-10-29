@@ -2,7 +2,7 @@
 
 ## 0.4.3
 
-- SKILL.md names the exit code for each command-line case, as the CLI does. An unknown file extension exits 1, and a wrong number of paths to `convert` or `inspect` exits 2. The npm package ships only `dist` and the README, so this text is in the repository, not in the package.
+- SKILL.md names the exit code for each command-line case, as the CLI does. An unknown command, an unknown option to `mcp`, and an unknown flag or argument to `convert`, `inspect`, or `mcp` exit 2. A wrong number of paths to `convert` or `inspect` also exits 2. An unknown file extension exits 1. The npm package does not ship SKILL.md, so this text is in the repository, not in the package.
 - The README status line names this version. The 0.4.2 package said 0.4.0.
 - The README documents `columnName` and `NUMBER_FORMATS`. `NUMBER_FORMATS` lists the seven number format codes that ODS and XLSX share. `columnName` returns the column letters for a column number. The code does not change.
 
