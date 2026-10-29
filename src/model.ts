@@ -102,30 +102,34 @@ const sameStyle = (a: TextRun, b: TextRun): boolean => a.href === b.href && (a.m
 /** The marks of `a` and `b` together, each once, in the canonical order. Seven entries at most, however many styles a file stacks. */
 export const mergeMarks = (a: readonly Mark[], b: readonly Mark[]): Mark[] => MARKS.filter((m) => a.includes(m) || b.includes(m));
 
-/** The size of inline content as a writer would repeat it: text and link targets, image bytes and descriptions. */
+/** The size of inline content as a writer would repeat it: text and link targets, image bytes and descriptions, and one for each node, so empty nodes cost something. */
 const inlineLength = (content: Inline[]): number =>
   content.reduce(
     (n, node) =>
       n +
       (node.type === "text"
-        ? node.text.length + (node.href?.length ?? 0)
+        ? node.text.length + (node.href?.length ?? 0) + 1
         : node.type === "footnote"
-          ? inlineLength(node.content)
+          ? inlineLength(node.content) + 1
           : node.type === "image"
-            ? node.data.length + (node.alt?.length ?? 0)
+            ? node.data.length + (node.alt?.length ?? 0) + 1
             : 1),
     0,
   );
 
-/** Characters of text in blocks, and bytes of images, counted as they are laid out: a row that appears twice counts twice. */
+/**
+ * Characters of text in blocks, and bytes of images, counted as they are laid out: a row that appears twice counts
+ * twice. Each block, list item, and inline node counts at least one, so a thousand empty paragraphs in a cell that
+ * repeats a million times are not free.
+ */
 export function textLength(blocks: Block[]): number {
   return blocks.reduce((n, block) => {
-    if (block.type === "table") return n + block.rows.reduce((m, row) => m + row.reduce((k, cell) => k + textLength(cell), 0), 0);
+    if (block.type === "table") return n + 1 + block.rows.reduce((m, row) => m + row.reduce((k, cell) => k + 1 + textLength(cell), 0), 0);
     if (block.type === "list") {
-      const items = (list: List): number => list.items.reduce((m, item) => m + inlineLength(item.content) + (item.sublist ? items(item.sublist) : 0), 0);
-      return n + items(block);
+      const items = (list: List): number => list.items.reduce((m, item) => m + 1 + inlineLength(item.content) + (item.sublist ? items(item.sublist) : 0), 0);
+      return n + 1 + items(block);
     }
-    return n + inlineLength(block.content);
+    return n + 1 + inlineLength(block.content);
   }, 0);
 }
 

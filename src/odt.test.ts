@@ -319,6 +319,15 @@ describe("hostile files", () => {
     limitExceeded(() => readOdt(odt(wrap(alt), "application/vnd.oasis.opendocument.text", [{ name: "Pictures/a.png", data: PNG }])));
   });
 
+  test("17 empty blocks in a repeated table cell are not free", () => {
+    const cell = `<table:table-cell table:number-columns-repeated="1000">${"<text:p/>".repeat(1000)}</table:table-cell>`;
+    const started = Date.now();
+    limitExceeded(() => readOdt(odt(wrap(`<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="1000">${cell}</table:table-row></table:table>`))));
+    expect(Date.now() - started).toBeLessThan(3000);
+    const few = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="3"><table:table-cell table:number-columns-repeated="3"><text:p>x</text:p><text:p/></table:table-cell></table:table-row></table:table>`;
+    expect(readOdt(odt(wrap(few))).model.blocks).toHaveLength(1);
+  });
+
   test("17 a length attribute of a million digits is not matched, and is read as no length", () => {
     const frame = (width: string) => wrap(`<text:p><draw:frame svg:width="${width}" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:image xlink:href="Pictures/a.png"/></draw:frame></text:p>`);
     const started = Date.now();
