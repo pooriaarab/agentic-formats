@@ -73,6 +73,10 @@ a person at a shell chooses the paths. Add the server to Claude Code with `.mcp.
 - **DOCX.** `readDocx` and `writeDocx` handle the same content as ODT: headings, marks, links,
   nested lists, tables with a header row, images, footnotes, and the title. A round trip through
   LibreOffice covers DOCX to DOCX, and DOCX to ODT and back.
+- **MIME types.** `ODT_MIME`, `ODS_MIME`, and `ODP_MIME` hold the media type of each ODF
+  format (`application/vnd.oasis.opendocument.text`, `...spreadsheet`, `...presentation`). Use
+  them to set a `Content-Type` header. Each reader also reads the `-template` variant, and
+  `readOdt` also reads the `-web` variant.
 - **ODS and XLSX.** `readOds`, `writeOds`, `readXlsx`, and `writeXlsx` handle several sheets,
   strings, numbers, booleans, formulas as text with their cached result, and number formats.
   Formulas use A1 notation in the model (`SUM(A1:B2,Sheet2!C3)`). The ODS code converts them to
