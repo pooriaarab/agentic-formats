@@ -127,7 +127,8 @@ class Pdf {
     let out = "";
     for (const ch of text) {
       const cp = ch.codePointAt(0)!;
-      if (cp === 9) out += "    ";
+      if (cp === 0xad) continue;
+      else if (cp === 9) out += "    ";
       else if (cp === 10 || cp === 13) out += " ";
       else if (cp >= 32 && cp <= 126) out += ch;
       else if (cp >= 0xa0 && cp <= 0xff) out += ch;
@@ -400,7 +401,7 @@ function atomsOf(pdf: Pdf, runs: TextRun[], bold: boolean): Atom[] {
 const sameStyle = (s: Seg, a: Atom): boolean => s.face === a.face && !!s.underline === !!a.underline && !!s.strike === !!a.strike && s.href === a.href;
 
 /** Break atoms into lines no wider than `width` points. A word wider than a line splits. */
-function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): Line[] {
+function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity, state?: { cut: boolean }): Line[] {
   const lines: Line[] = [];
   let line: Line = [];
   let used = 0;
@@ -417,7 +418,10 @@ function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): 
   };
   const wrapAt = (): void => {
     // Stop at the cap: the rest could never be drawn, and a narrow box must not make a line for each character.
-    if (lines.length >= maxLines) full = true;
+    if (lines.length >= maxLines) {
+      full = true;
+      if (state) state.cut = true;
+    }
     lines.push(line);
     line = [];
     used = 0;
@@ -518,14 +522,16 @@ function writeDeck(deck: Deck, pdf: Pdf): void {
         const atoms = shape.paragraphs.map((runs) => atomsOf(pdf, runs, false));
         let size = 18;
         let lines: Line[] = [];
+        let cut = { cut: false };
         for (; size >= 8; size--) {
-          lines = atoms.flatMap((a) => wrap(a, size, width, Math.floor((height + 0.01) / (size * 1.2)) + 1));
+          cut = { cut: false };
+          lines = atoms.flatMap((a) => wrap(a, size, width, Math.floor((height + 0.01) / (size * 1.2)) + 1, cut));
           if (lines.length * size * 1.2 <= height + 0.01) break;
         }
         size = Math.max(size, 8);
         const fit = Math.max(0, Math.floor((height + 0.01) / (size * 1.2)));
         if (lines.length > fit) {
-          if (lines.slice(fit).some((l) => l.some((seg) => seg.text.trim()))) pdf.warnings.add(`text was cut to fit its box on slide ${index + 1}`);
+          if (cut.cut || lines.slice(fit).some((l) => l.some((seg) => seg.text.trim()))) pdf.warnings.add(`text was cut to fit its box on slide ${index + 1}`);
           lines = lines.slice(0, fit);
         }
         lines.forEach((line, i) => drawLine(page, line, size, x, top - y - size * 1.2 * i - size));

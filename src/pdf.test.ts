@@ -495,5 +495,13 @@ describe("PDF writer, review round 4", () => {
     expect(() => writePdf({ title: "x".repeat(2000), blocks: [] }, { maxTextChars: 1000 })).toThrow(FormatError);
     expect(writePdf({ title: "x".repeat(900), blocks: [] }).warnings).toContain("the title was cut to 500 characters");
   });
+
+  test("5 text lost behind a run of line breaks is reported, and a soft hyphen is dropped", () => {
+    const runs = [text("a"), ...Array.from({ length: 10 }, () => text("\n")), text("SECRET")];
+    const r = writePdf({ width: 300, height: 100, slides: [{ shapes: [{ type: "textbox", frame: { x: 0, y: 0, width: 300, height: 30 }, paragraphs: [runs] }] }] });
+    expect(r.warnings).toContain("text was cut to fit its box on slide 1");
+    expect(contentText(r.bytes)).not.toContain("SECRET");
+    expect(contentText(writePdf({ blocks: [para("co\u00adop")] }).bytes)).toBe("coop");
+  });
 });
 
