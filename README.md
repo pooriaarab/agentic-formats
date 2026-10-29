@@ -12,7 +12,7 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 > `AGENTIC_FORMATS_ROOT`. To allow any path, set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`. An empty
 > variable is an error.
 
-> Status: 0.2.0. The neutral models, the input guards, all six formats (ODT, DOCX, ODS, XLSX, ODP,
+> Status: 0.3.0. The neutral models, the input guards, all six formats (ODT, DOCX, ODS, XLSX, ODP,
 > PPTX), the CLI, and the MCP server work. A replaced file is written atomically.
 > See [CHANGELOG.md](CHANGELOG.md).
 
@@ -74,6 +74,11 @@ limited: a person at a shell chooses the paths. Add the server to Claude Code wi
   boxes (paragraphs with marks and links), rectangles, ellipses, lines, pictures, and notes, on a
   slide of any size. A PPTX placeholder with no position of its own takes it from its layout, then
   its master. LibreOffice round trips cover both formats and the trip from one to the other.
+- **PDF.** `writePdf(deck)` writes one page per slide, and `writePdf(textDoc)` writes Letter pages.
+  It handles text with marks and links, headings, lists, tables, footnotes, PNG and JPEG images,
+  and rectangles, ellipses, and lines. A slide text box takes the largest size from 18 to 8
+  points that fits, and text that still does not fit is cut and reported. It has no PDF reader. The
+  output is deterministic and the code is plain JavaScript, so it runs in a Worker. See Limits.
 - **Normalizing.** `normalizeTextDoc` merges equal runs, so you can compare two documents.
 
 ```ts
@@ -90,7 +95,7 @@ try {
 ## Planned
 
 - An HTTP API as a Cloudflare Worker, and a small web UI. The Worker answers `/health` only.
-- Writing a file from a model that an agent builds (`write_model`), and more formats (Markdown, CSV, PDF).
+- Writing a file from a model that an agent builds (`write_model`), and more formats (Markdown, CSV), and PDF in the CLI and MCP tools.
 
 ## Limits
 
@@ -114,6 +119,9 @@ try {
 - Images are PNG, JPEG, or GIF, found by their first bytes. A remote image is never loaded.
 - The CLI and the MCP tools read and write files on disk. They are not an HTTP service.
 - Lengths in the models are in points. Every reader reads UTF-8 XML only.
+- PDF: the standard Helvetica and Courier faces, so a character outside Latin-1 and Windows
+  punctuation is written as `?` and reported. No GIF images, speaker notes, or superscript, and a
+  table row taller than a page is cut. Footnotes are written as notes at the end of the document, not on the page that cites them. A heading can end a page, and a table header row is not repeated on the next page. The SDK writes PDF; the CLI and MCP tools do not yet.
 - A file is never partly read. A file that goes past a limit is rejected.
 
 ## Develop

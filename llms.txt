@@ -5,6 +5,7 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 Keywords: odf,ooxml,odt,ods,odp,docx,xlsx,pptx,office,documents,import,export,agents,mcp,cli.
 
 - SDK: import { convert, inspect, readOdt, writeDocx } from "agentic-formats".
+- PDF: import { writePdf } from "agentic-formats"; writePdf(deck | textDoc) returns { bytes, warnings }, one page per slide. SDK only. Pure JS, works in Workers.
 - CLI: agentic-formats convert in.odt out.docx. agentic-formats inspect in.docx.
 - MCP: run agentic-formats mcp, then call inspect_file, read_model, or convert_file.
 
