@@ -11,7 +11,7 @@ export interface XmlElement {
 /** Namespace URI to the canonical prefix; "" means the element carries no prefix. */
 export type Namespaces = Record<string, string>;
 
-const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+const ENTITIES = new Map([["amp", "&"], ["lt", "<"], ["gt", ">"], ["quot", '"'], ["apos", "'"]]);
 const XML_NS = "http://www.w3.org/XML/1998/namespace";
 const SPACE = /[ \t\r\n]/;
 
@@ -25,7 +25,7 @@ const isXmlChar = (c: number): boolean =>
 function decode(value: string): string {
   if (!value.includes("&")) return value;
   return value.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (_match, entity: string) => {
-    if (entity[0] !== "#") return ENTITIES[entity] ?? bad(`the entity &${entity}; is not defined`);
+    if (entity[0] !== "#") return ENTITIES.get(entity) ?? bad(`the entity &${entity}; is not defined`);
     const code = entity[1] === "x" || entity[1] === "X" ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
     return isXmlChar(code) ? String.fromCodePoint(code) : bad("a character reference is not allowed");
   });
@@ -168,9 +168,11 @@ export const xmlEscape = (value: unknown): string =>
 
 /**
  * A link target a file may carry: web, mail, in-page, or relative. Anything else, such as
- * `javascript:` or `file:`, returns undefined. Writers report each dropped link as a warning.
+ * `javascript:`, `file:`, or a network share (`//host/share`, `\\host\share`), returns undefined.
+ * Writers report each dropped link as a warning.
  */
 export const safeHref = (value: unknown): string | undefined => {
   const href = String(value ?? "").trim();
+  if (/^[\\/]{2}/.test(href)) return undefined;
   return /^(https?:|mailto:|#|[^:]*$)/i.test(href) ? href : undefined;
 };

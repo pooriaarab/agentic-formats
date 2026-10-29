@@ -6,22 +6,24 @@
  *       total cap   4 too many entries   5 a name that leaves the package (`..`, root, drive,
  *       backslash, control character)   6 the same name twice, also in another case   7 a bad part
  *       that the reader does not want   8 bytes that are not a zip   9 an input over the size cap
- *       10 a writer that goes past the same caps
+ *       10 a writer that goes past the same caps   10b a directory that lies about the size: a small
+ *       claim over a huge real output, a big claim over a small output, and a total of real bytes
+ *       over the total cap
  * XML:  11 a DOCTYPE with entities (billion laughs)   12 an undefined entity (external reference)
  *       13 nesting past the cap   14 elements past the cap   15 a part past the size cap
  *       16 broken structure   17 a character XML forbids   18 an encoding other than UTF-8
  */
-import { strToU8, zipSync } from "fflate";
+import { deflateSync, strToU8, zipSync } from "fflate";
 import { describe, expect, test } from "vitest";
 import { DEFAULT_LIMITS, FormatError, withLimits } from "./limits.js";
-import { parseXml } from "./xml.js";
+import { parseXml, safeHref } from "./xml.js";
 import { isSafeEntryName, readZip, writeZip } from "./zip.js";
 
 const NS = { "urn:t": "t", "urn:d": "" };
 const any = () => true;
 
 /** A zip with the stored method and no checks, so a test can name entries as it likes. */
-function rawZip(entries: [string, Uint8Array][]): Uint8Array {
+function rawZip(entries: [string, Uint8Array][], forged?: { method: 8; claimedSize: number }): Uint8Array {
   const parts: Uint8Array[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;
@@ -32,8 +34,9 @@ function rawZip(entries: [string, Uint8Array][]): Uint8Array {
     const lv = new DataView(local.buffer);
     u32(lv, 0, 0x04034b50);
     lv.setUint16(4, 20, true);
+    if (forged) lv.setUint16(8, forged.method, true);
     u32(lv, 18, data.length);
-    u32(lv, 22, data.length);
+    u32(lv, 22, forged?.claimedSize ?? data.length);
     lv.setUint16(26, nameBytes.length, true);
     local.set(nameBytes, 30);
     local.set(data, 30 + nameBytes.length);
@@ -42,8 +45,9 @@ function rawZip(entries: [string, Uint8Array][]): Uint8Array {
     u32(dv, 0, 0x02014b50);
     dv.setUint16(4, 20, true);
     dv.setUint16(6, 20, true);
+    if (forged) dv.setUint16(10, forged.method, true);
     u32(dv, 20, data.length);
-    u32(dv, 24, data.length);
+    u32(dv, 24, forged?.claimedSize ?? data.length);
     dv.setUint16(28, nameBytes.length, true);
     u32(dv, 42, offset);
     dir.set(nameBytes, 46);
@@ -134,6 +138,42 @@ describe("zip guards", () => {
     rejects(() => readZip(new Uint8Array(101), withLimits({ maxInputBytes: 100 }), "test", any), "LIMIT_EXCEEDED", /larger than 100/);
   });
 
+  test("10b a directory with a small claimed size over a huge real output is refused fast", () => {
+    const packed = deflateSync(new Uint8Array(64 * 1024 * 1024), { level: 9 });
+    expect(packed.length).toBeLessThan(500 * 1024);
+    const file = rawZip([["content.xml", packed]], { method: 8, claimedSize: 100 });
+    const started = Date.now();
+    rejects(() => readZip(file, DEFAULT_LIMITS, "test", any), "INVALID_FILE", /larger than its directory/);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("10b a claimed size under the ratio floor cannot hide a real output past the entry cap", () => {
+    const packed = deflateSync(new Uint8Array(8 * 1024 * 1024), { level: 9 });
+    const file = rawZip([["content.xml", packed]], { method: 8, claimedSize: 1000 });
+    rejects(() => readZip(file, withLimits({ maxEntryBytes: 1024 * 1024 }), "test", any), "INVALID_FILE");
+  });
+
+  test("10b a directory that claims more than the real output is refused", () => {
+    const packed = deflateSync(strToU8("<r/>"));
+    const file = rawZip([["content.xml", packed]], { method: 8, claimedSize: 5000 });
+    rejects(() => readZip(file, DEFAULT_LIMITS, "test", any), "INVALID_FILE", /smaller than its directory/);
+  });
+
+  test("10b claimed sizes that match the real output count against the total cap across entries", () => {
+    const honest = (n: string) => [n, deflateSync(new Uint8Array(600))] as [string, Uint8Array];
+    const file = rawZip([honest("a.xml"), honest("b.xml")], { method: 8, claimedSize: 600 });
+    expect(Object.keys(readZip(file, withLimits({ maxTotalBytes: 1200 }), "test", any))).toEqual(["a.xml", "b.xml"]);
+    rejects(() => readZip(file, withLimits({ maxTotalBytes: 1199 }), "test", any), "LIMIT_EXCEEDED", /unpacks to more/);
+  });
+
+  test("10b a deflated entry round trips and the result has no prototype keys", () => {
+    const file = writeZip([{ name: "a.xml", data: "<r/>" }], DEFAULT_LIMITS);
+    const files = readZip(file, DEFAULT_LIMITS, "test", any);
+    expect(new TextDecoder().decode(files["a.xml"])).toBe("<r/>");
+    expect(files["constructor"]).toBeUndefined();
+    expect(files["__proto__"]).toBeUndefined();
+  });
+
   test("a clean zip unpacks only the wanted entries", () => {
     const file = writeZip([{ name: "mimetype", data: "x", store: true }, { name: "a/b.xml", data: "<r/>" }, { name: "skip.bin", data: "y" }], DEFAULT_LIMITS);
     const files = readZip(file, DEFAULT_LIMITS, "test", (n) => n !== "skip.bin");
@@ -158,7 +198,10 @@ describe("xml guards", () => {
     rejects(() => parse(laughs), "INVALID_FILE", /DOCTYPE/);
   });
 
-  test("12 an undefined or external entity is refused", () => {
+  test("12 an undefined or external entity is refused, also a name from Object.prototype", () => {
+    for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      rejects(() => parse(`<r>&${name};</r>`), "INVALID_FILE", /not defined/);
+    }
     rejects(() => parse(`<r>&xxe;</r>`), "INVALID_FILE", /not defined/);
     rejects(() => parse(`<r a="&xxe;"/>`), "INVALID_FILE", /not defined/);
   });
@@ -203,6 +246,11 @@ describe("xml guards", () => {
   test("18 an encoding other than UTF-8", () => {
     rejects(() => parse(`<?xml version="1.0" encoding="UTF-16"?><r/>`), "INVALID_FILE", /UTF-16/);
     expect(parse(`<?xml version="1.0" encoding="utf-8"?><r/>`).name).toBe("r");
+  });
+
+  test("19 a link target that opens a network share is refused", () => {
+    for (const href of ["//host/share/x", "\\\\host\\share\\x", " //host/x", "\\/host/x", "/\\host/x"]) expect(safeHref(href)).toBeUndefined();
+    for (const href of ["https://a.example/x", "mailto:a@b.example", "#top", "docs/a.html", "/root/a.html", "a.html"]) expect(safeHref(href)).toBe(href);
   });
 
   test("a valid part reads: entities, CDATA, comments, and any prefix for a known namespace", () => {
