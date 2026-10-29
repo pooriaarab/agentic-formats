@@ -14,11 +14,12 @@ Commands:
   convert <in> <out> [--force]   Convert a file. The extensions pick the formats.
   inspect <file>                 Print what a file holds, as JSON.
   mcp                            Start the MCP server on stdio. Its tools read and write only
-                                 the working folder; see AGENTIC_FORMATS_ROOT below.
+                                 the working folder; see AGENTIC_FORMATS_ROOT below. Its only
+                                 options are --help and --version. Any other option exits 2.
 
 Formats: ${FORMATS.join(", ")}. A file converts to a format of its own kind:
 documents (odt, docx), spreadsheets (ods, xlsx), slide decks (odp, pptx).
-Output is JSON on stdout. Errors go to stderr and the exit code is 1.
+Output is JSON on stdout. Errors go to stderr. A command-line error exits 2; any other error exits 1.
 
 Environment (mcp only):
   AGENTIC_FORMATS_ROOT             Limit every path to this folder instead of the working folder.
