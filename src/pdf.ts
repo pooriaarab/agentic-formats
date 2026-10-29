@@ -71,7 +71,7 @@ class Pdf {
   pages: Page[] = [];
   images = new Map<Uint8Array, Img | null>();
   /** Images by their bytes, so two copies of one file are stored once. */
-  byContent = new Map<string, Img | null>();
+  byContent = new Map<string, { data: Uint8Array; img: Img | null }>();
   warnings = new Set<string>();
   charge: (n: number) => void;
   bytes: (n: number) => void;
@@ -125,17 +125,18 @@ class Pdf {
 
   /** Register an image and return its name, or undefined with a warning when it cannot be embedded. */
   image(data: Uint8Array): Img | undefined {
+    if (!(data instanceof Uint8Array)) throw new FormatError("INVALID_MODEL", "image data must be a Uint8Array");
     const known = this.images.get(data);
     if (known !== undefined) return known ?? undefined;
     const key = `${data.length}:${hash(data)}`;
     const same = this.byContent.get(key);
-    if (same !== undefined) {
-      this.images.set(data, same);
-      return same ?? undefined;
+    if (same && same.data.every((b, i) => b === data[i])) {
+      this.images.set(data, same.img);
+      return same.img ?? undefined;
     }
     const made = this.embed(data);
     this.images.set(data, made ?? null);
-    this.byContent.set(key, made ?? null);
+    if (!same) this.byContent.set(key, { data, img: made ?? null });
     return made;
   }
 
@@ -187,7 +188,7 @@ class Pdf {
     const colors = ctype === 2 ? 3 : ctype === 6 ? 3 : 1;
     if (ctype === 0 || ctype === 2 || ctype === 3) {
       if (ctype === 3 && (!palette || palette.length < 3 || palette.length > 768)) return skip("is a PNG with no palette");
-      if (ctype === 2 && depth < 8) return skip("is an unusual PNG");
+      if ((ctype === 2 && depth < 8) || (ctype === 3 && depth > 8) || ![1, 2, 4, 8, 16].includes(depth)) return skip("is an unusual PNG");
       const space = ctype === 3 ? `[/Indexed /DeviceRGB ${Math.floor(palette!.length / 3) - 1} <${[...palette!.subarray(0, Math.floor(palette!.length / 3) * 3)].map((b) => b.toString(16).padStart(2, "0")).join("")}>]` : ctype === 2 ? "/DeviceRGB" : "/DeviceGray";
       this.set(id, `<</Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace ${space} /BitsPerComponent ${depth} /Filter /FlateDecode /DecodeParms <</Predictor 15 /Colors ${colors} /BitsPerComponent ${depth} /Columns ${width}>>>>`, joined);
       return img;
@@ -202,6 +203,7 @@ class Pdf {
     const raw = inflateUpTo(joined, expected);
     if (!raw || raw.length !== expected) return skip("is a PNG with damaged pixels");
     const px = unfilter(raw, width, height, bpp);
+    if (!px) return skip("is a PNG with damaged pixels");
     const n = width * height;
     const body = new Uint8Array(n * (bpp - 1));
     const alpha = new Uint8Array(n);
@@ -281,7 +283,7 @@ function hash(b: Uint8Array): string {
 function jpegComponents(b: Uint8Array): number {
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   for (let i = 2; i + 9 < b.length && b[i] === 0xff; i += 2 + v.getUint16(i + 2)) {
-    if (b[i + 1] >= 0xc0 && b[i + 1] <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(b[i + 1])) return b[i + 4] === 8 ? b[i + 9] : 0;
+    if (b[i + 1] >= 0xc0 && b[i + 1] <= 0xc2) return b[i + 4] === 8 ? b[i + 9] : 0;
   }
   return 0;
 }
@@ -296,18 +298,20 @@ function inflateUpTo(data: Uint8Array, size: number): Uint8Array | undefined {
       out.set(chunk, at);
       at += chunk.length;
     });
-    z.push(data, true);
+    // Push in small slices: the decoder unpacks a whole push before it calls back, so one big push would fill memory first.
+    for (let i = 0; i < data.length || i === 0; i += 16384) z.push(data.subarray(i, i + 16384), i + 16384 >= data.length);
   } catch {
     return undefined;
   }
   return out.subarray(0, at);
 }
 
-function unfilter(raw: Uint8Array, width: number, height: number, bpp: number): Uint8Array {
+function unfilter(raw: Uint8Array, width: number, height: number, bpp: number): Uint8Array | undefined {
   const stride = width * bpp;
   const out = new Uint8Array(stride * height);
   for (let y = 0; y < height; y++) {
     const kind = raw[y * (stride + 1)];
+    if (kind > 4) return undefined;
     const src = y * (stride + 1) + 1;
     for (let x = 0; x < stride; x++) {
       const left = x >= bpp ? out[y * stride + x - bpp] : 0;
@@ -542,6 +546,14 @@ function inlineItems(ctx: Ctx, content: Inline[], width: number, dx: number, siz
   return items;
 }
 
+const hasRich = (block: Block): boolean =>
+  block.type === "table"
+    ? block.rows.some((r) => r.some((c) => c.some(hasRich)))
+    : block.type === "list"
+      ? hasRichList(block)
+      : block.content.some((n) => n.type === "image" || n.type === "footnote");
+const hasRichList = (list: List): boolean => list.items.some((i) => i.content.some((n) => n.type === "image" || n.type === "footnote") || (i.sublist ? hasRichList(i.sublist) : false));
+
 const plainText = (blocks: Block[]): string =>
   blocks
     .map((b) => (b.type === "table" ? b.rows.map((r) => r.map((c) => plainText(c)).join(" | ")).join("\n") : b.type === "list" ? plainList(b) : b.content.map((n) => (n.type === "text" ? n.text : n.type === "break" ? "\n" : "")).join("")))
@@ -618,6 +630,7 @@ function flow(ctx: Ctx, blocks: Block[], width: number, dx: number, bold = false
     else if (block.type === "list") items.push(...listItems(ctx, block, width, dx), gap(6));
     else if (ctx.depth > 0) {
       ctx.pdf.warnings.add("a table inside a table was written as lines of text");
+      if (hasRich(block)) ctx.pdf.warnings.add("an image or footnote inside a nested table was not written");
       items.push(...inlineItems(ctx, [{ type: "text", text: plainText([block]).replace(/\n/g, " / ") }], width, dx, BODY, bold));
     } else items.push(...tableItems(ctx, block, width), gap(8));
   }

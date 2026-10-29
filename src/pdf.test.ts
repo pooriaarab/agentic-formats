@@ -273,8 +273,10 @@ describe("PDF writer", () => {
     const copies = Array.from({ length: 6 }, () => ({ type: "paragraph" as const, content: [{ type: "image" as const, data: PNG.slice(), mime: "image/png" as const }] }));
     const { bytes } = writePdf({ blocks: copies });
     expect(latin(bytes).match(/\/Subtype \/Image/g)).toHaveLength(2);
-    // The 1x1 fixture unpacks to 6 bytes; a budget of 5 refuses it.
-    expect(() => writePdf({ blocks: copies.slice(0, 1) }, { maxTotalBytes: 100_000 })).not.toThrow();
+    // The 1x1 fixture unpacks to 6 bytes: a budget of 6 bytes refuses it (as unpacked pixels or as output).
+    const one = { blocks: copies.slice(0, 1) };
+    expect(() => writePdf(one, { maxTotalBytes: 6 })).toThrow(/unpack|passes/);
+    expect(() => writePdf(one, { maxTotalBytes: 100_000 })).not.toThrow();
   });
 
   test("4 a PNG with a tRNS chunk reports that its transparency is lost", () => {
@@ -323,5 +325,37 @@ describe("PDF writer", () => {
         }
       }
     }
+  });
+
+  test("4 a PNG bomb is stopped while it unpacks, and a bad filter byte is damage", () => {
+    const png = (ctype: number, idat: Uint8Array, w = 1, h = 1) => {
+      const chunk = (type: string, body: Uint8Array) => {
+        const b = new Uint8Array(12 + body.length);
+        new DataView(b.buffer).setUint32(0, body.length);
+        b.set([...type].map((c) => c.charCodeAt(0)), 4);
+        b.set(body, 8);
+        return b;
+      };
+      const ihdr = new Uint8Array(13);
+      const v = new DataView(ihdr.buffer);
+      v.setUint32(0, w);
+      v.setUint32(4, h);
+      ihdr.set([8, ctype, 0, 0, 0], 8);
+      return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk("IHDR", ihdr), ...chunk("IDAT", idat), ...chunk("IEND", new Uint8Array())]);
+    };
+    const inline = (data: Uint8Array) => ({ blocks: [{ type: "paragraph" as const, content: [{ type: "image" as const, data, mime: "image/png" as const }] }] });
+    const bomb = png(6, zlibSync(new Uint8Array(64 * 1024 * 1024), { level: 9 }));
+    const r = writePdf(inline(bomb));
+    expect(r.warnings).toContain("an image is a PNG with damaged pixels: not written");
+    const badFilter = writePdf(inline(png(6, zlibSync(Uint8Array.of(9, 0, 0, 0, 0)))));
+    expect(badFilter.warnings).toContain("an image is a PNG with damaged pixels: not written");
+  });
+
+  test("4 a picture with no data is a FormatError, and a nested table reports lost images", () => {
+    const deck = { width: 100, height: 100, slides: [{ shapes: [{ type: "picture", frame: { x: 0, y: 0, width: 5, height: 5 } }] }] };
+    expect(() => writePdf(deck as never)).toThrow(FormatError);
+    const inner = { type: "table" as const, rows: [[[{ type: "paragraph" as const, content: [{ type: "image" as const, data: PNG, mime: "image/png" as const }] }]]] };
+    const r = writePdf({ blocks: [{ type: "table", rows: [[[inner]]] }] });
+    expect(r.warnings).toContain("an image or footnote inside a nested table was not written");
   });
 });
