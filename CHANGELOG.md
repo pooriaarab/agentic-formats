@@ -3,11 +3,11 @@
 ## 0.2.0
 
 - A bad model fails with a `FormatError` (`INVALID_MODEL`), not a `TypeError`. This includes a block or inline type that is not a string, such as a symbol.
-- `writeOdt` newly refuses a block list that is not a list. `writeDocx` already did.
+- `writeOdt` now checks the block list first. 0.1.0 threw a `TypeError` for a block list that was not a list.
 - `writeOdt` and `writeDocx` refuse a heading level that is not a number. 0.1.0 wrote a numeric string, `null`, `undefined`, or an object as a heading level. These now fail.
 - A seeded fuzz test runs every reader and writer.
-- Output files are written to a temporary file in the same folder. Then a rename, or a hard link when `overwrite` is off, puts the file at the path. A failed write keeps the old file. A replaced file keeps its mode, not its owner or ACLs.
-- The CLI refuses a symbolic link at the output path. The MCP tools follow a link that stays inside the allowed folder, as in 0.1.0.
+- Output files are written to a temporary file in the same folder. Then a rename, or a hard link when `overwrite` is off, puts the file at the path. A failed write keeps the old file. A replaced file keeps its permission bits, not its owner or ACLs.
+- The CLI refuses a symbolic link at the output path, as in 0.1.0. In folder mode, the MCP tools follow a link that stays inside the allowed folder.
 - On a filesystem with no hard links, a new file is written in place, not atomically.
 - A crash during a write can leave a hidden `.<name>.<hex>.tmp` file in the output folder. The name is cut to 32 characters.
 - Three refusals changed. A read-only file (mode 0444) is now replaced when its folder can be written, as `mv` does. 0.1.0 refused it. An existing file in a folder that cannot be written is no longer written in place. The write fails. A file with a second name (a hard link) is now replaced, and the other name keeps the old bytes. 0.1.0 refused it.
