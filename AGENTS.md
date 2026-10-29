@@ -4,37 +4,21 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 
 ## Mental model
 
-Text goes in. Stats or a route receipt come out. One core serves
-all three faces, so each face returns the same shape.
+A file goes in. A neutral model comes out. A model goes in. A file comes out.
+The models are `TextDoc`, `Workbook`, and `Deck`. Apps keep these models
+and never write zip or XML code.
 
-## The three faces
+## Faces
 
-- SDK: `import { summarizeText } from "agentic-formats"`.
-- CLI: `npx agentic-formats summary --text "..."`.
-- MCP: `npx agentic-formats mcp`, then call a tool below.
+- SDK: `import { normalizeTextDoc, readZip } from "agentic-formats"`.
+- CLI: `npx agentic-formats --help`.
+- MCP: `npx agentic-formats mcp`.
 
 Keywords: odf,ooxml,odt,ods,odp,docx,xlsx,pptx,office,documents,import,export,agents,mcp,cli.
 
-## MCP tools
-
-| Tool | Use it for |
-| --- | --- |
-| summarize_text | Count chars, words, lines, top words. |
-| dispatch_text | Route one text. Pass dryRun to preview. |
-| get_cost_report | Read session cost totals. |
-
-## The loop
-
-1. Discover the tools with `tools/list`.
-2. Run `summarize_text` on a sample.
-3. Preview a route with `dispatch_text` and dryRun true.
-4. Run the real route when the preview looks right.
-5. Read `get_cost_report` and state the cost.
-
 ## Rules
 
-- Preview with dry run before each real dispatch.
-- Stop when a guard denies the call. State the reason.
-- Never retry a denied call with changed text to dodge a guard.
-- Report adapter errors as errors. Never present them as success.
-- State the cost report before you claim the task is done.
+- Treat every file as hostile input. Use `readZip` and `parseXml` with their limits.
+- Never fetch a remote resource that a file names.
+- Report a `FormatError` as a failure. Do not retry with looser limits to get past it.
+- Report each warning from a reader or writer. A warning names content that was lost.

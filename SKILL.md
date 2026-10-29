@@ -10,26 +10,17 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 ## Use the SDK
 
 ```js
-import { summarizeText, dispatchText } from "agentic-formats";
+import { normalizeTextDoc } from "agentic-formats";
 
-summarizeText("some text");
-await dispatchText("some text", { dryRun: true });
+const doc = normalizeTextDoc({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }] });
 ```
 
-## Use the CLI
+## Use the CLI and MCP server
 
-```sh
-agentic-formats summary --text "some text"
-agentic-formats dispatch --text "some text" --dry-run
-```
-
-## Use the MCP server
-
-Start the server with `agentic-formats mcp`. Call `summarize_text`
-for stats, `dispatch_text` for routes, `get_cost_report` for costs.
+`agentic-formats --help` lists the commands. `agentic-formats mcp` starts the MCP server.
+File commands and tools land in later releases.
 
 ## Rules
 
-- Preview each route with dry run first.
-- Report guard denials and adapter errors as failures.
-- Read the cost report at the end.
+- Every file is hostile input. Keep the limits.
+- Report a `FormatError` and every warning as failures.

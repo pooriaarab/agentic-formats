@@ -4,12 +4,11 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 
 Keywords: odf,ooxml,odt,ods,odp,docx,xlsx,pptx,office,documents,import,export,agents,mcp,cli.
 
-- SDK: import { summarizeText, dispatchText } from "agentic-formats".
-- CLI: agentic-formats summary --text "...".
-- MCP: run agentic-formats mcp, then call summarize_text.
+- SDK: import { normalizeTextDoc, readZip, parseXml } from "agentic-formats".
+- CLI: agentic-formats --help.
+- MCP: run agentic-formats mcp.
 
 ## Docs
 
 - README: https://github.com/pooriaarab/agentic-formats
-- Core contract: https://github.com/pooriaarab/agentic-formats/blob/main/docs/agentic-core.md
 - License: MIT
