@@ -13,11 +13,16 @@ Usage: agentic-formats <command>
 Commands:
   convert <in> <out> [--force]   Convert a file. The extensions pick the formats.
   inspect <file>                 Print what a file holds, as JSON.
-  mcp                            Start the MCP server on stdio.
+  mcp                            Start the MCP server on stdio. Its tools read and write only
+                                 the working folder; see AGENTIC_FORMATS_ROOT below.
 
 Formats: ${FORMATS.join(", ")}. A file converts to a format of its own kind:
 documents (odt, docx), spreadsheets (ods, xlsx), slide decks (odp, pptx).
 Output is JSON on stdout. Errors go to stderr and the exit code is 1.
+
+Environment (mcp only):
+  AGENTIC_FORMATS_ROOT             Limit every path to this folder instead of the working folder.
+  AGENTIC_FORMATS_UNSAFE_ANY_PATH  Set to 1 to allow any path. An empty variable is an error.
 
 Flags:
   --force          Replace the output file if it exists.
@@ -41,8 +46,15 @@ export async function runCli(argv: string[]): Promise<number> {
     return 0;
   }
   if (first === "mcp") {
-    const { startMcp } = await import("./mcp.js");
-    await startMcp({ root: process.env.AGENTIC_FORMATS_ROOT });
+    try {
+      const { startMcpFromEnv } = await import("./mcp.js");
+      await startMcpFromEnv();
+    } catch (error) {
+      const message = describeError(error);
+      if (message === undefined) throw error;
+      console.error(message);
+      return 1;
+    }
     return 0;
   }
   const force = rest.includes("--force");

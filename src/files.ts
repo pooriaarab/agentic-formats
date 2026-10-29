@@ -10,13 +10,35 @@ export class UsageError extends Error {
   }
 }
 
+/** Which paths a tool may touch: one folder and everything under it, or any path the process can reach. */
+export type PathPolicy = { folder: string } | { anyPath: true };
+
 /**
- * Resolve a path inside `root`, and refuse one that leaves it, by `..` or by a symbolic link.
- * Without a root, the path is only made absolute.
+ * The policy the MCP server runs with. With no variable set, the folder is the working folder.
+ * `AGENTIC_FORMATS_ROOT` names another folder. `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1` allows any path.
+ * An empty variable, a flag other than `1`, both variables, or a root that is not a folder is an
+ * error: a typo in a config file never turns the guard off.
  */
-export function resolveInside(path: string, root?: string): string {
-  const absolute = resolve(root ?? ".", path);
-  if (!root) return absolute;
+export function pathPolicyFromEnv(env: NodeJS.ProcessEnv, cwd: string): PathPolicy {
+  const root = env.AGENTIC_FORMATS_ROOT;
+  const anyPath = env.AGENTIC_FORMATS_UNSAFE_ANY_PATH;
+  if (root !== undefined && root.trim() === "") throw new UsageError("AGENTIC_FORMATS_ROOT is set but empty; set it to a folder, or unset it to use the working folder");
+  if (anyPath !== undefined && anyPath !== "1") throw new UsageError('AGENTIC_FORMATS_UNSAFE_ANY_PATH must be "1" to allow any path; unset it otherwise');
+  if (anyPath === "1" && root !== undefined) throw new UsageError("set AGENTIC_FORMATS_ROOT or AGENTIC_FORMATS_UNSAFE_ANY_PATH, not both");
+  if (anyPath === "1") return { anyPath: true };
+  const folder = resolve(cwd, root ?? ".");
+  if (!existsSync(folder) || !statSync(folder).isDirectory()) throw new UsageError(`"${folder}" is not a folder`);
+  return { folder };
+}
+
+/**
+ * Resolve a path under a policy. With a folder, a path that leaves it, by `..` or by a symbolic
+ * link, is refused.
+ */
+export function resolvePath(path: string, policy: PathPolicy): string {
+  if ("anyPath" in policy) return resolve(path);
+  const { folder } = policy;
+  const absolute = resolve(folder, path);
   let existing = absolute;
   const rest: string[] = [];
   while (!existsSync(existing) && dirname(existing) !== existing) {
@@ -24,8 +46,10 @@ export function resolveInside(path: string, root?: string): string {
     existing = dirname(existing);
   }
   const real = join(realpathSync(existing), ...rest);
-  const realRoot = realpathSync(root);
-  if (real !== realRoot && !real.startsWith(realRoot + sep)) throw new UsageError(`"${path}" is outside the allowed folder`);
+  const realRoot = realpathSync(folder);
+  // A root such as `/` already ends in the separator.
+  const prefix = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+  if (real !== realRoot && !real.startsWith(prefix)) throw new UsageError(`"${path}" is outside the allowed folder`);
   return real;
 }
 

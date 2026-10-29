@@ -7,6 +7,11 @@
 
 Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.
 
+> **Safe by default.** The MCP server reads and writes only the folder it starts in. An agent
+> that reads untrusted text must not reach your other files. To use another folder, set
+> `AGENTIC_FORMATS_ROOT`. To allow any path, set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`. An empty
+> variable is an error.
+
 > Status: early. The neutral models, the input guards, all six formats (ODT, DOCX, ODS, XLSX, ODP,
 > PPTX), the CLI, and the MCP server work. The package is not on npm yet.
 
@@ -31,9 +36,12 @@ documents (`odt`, `docx`), spreadsheets (`ods`, `xlsx`), slide decks (`odp`, `pp
 Errors go to stderr and the exit code is 1.
 
 The MCP server has three tools: `inspect_file`, `read_model` (the file as neutral JSON), and
-`convert_file`. Set `AGENTIC_FORMATS_ROOT` to a folder to limit every path to it; a path that
-leaves the folder, by `..` or by a link, is refused. Without it a tool reads and writes any path
-the process can. Add the server to Claude Code with `.mcp.json`:
+`convert_file`. Every path stays inside one folder. With no variable set, that folder is the
+working folder of the server. Set `AGENTIC_FORMATS_ROOT` to choose another folder (`/` allows the
+whole disk). A path that leaves the folder, by `..` or by a link, is refused. To allow any path,
+set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`; the server then says so on stderr. An empty variable, a
+value other than `1`, or both variables together stops the server with an error. The CLI is not
+limited: a person at a shell chooses the paths. Add the server to Claude Code with `.mcp.json`:
 
 ```json
 { "mcpServers": { "agentic-formats": { "command": "npx", "args": ["-y", "agentic-formats", "mcp"], "env": { "AGENTIC_FORMATS_ROOT": "/path/to/folder" } } } }

@@ -16,6 +16,8 @@
  *  6 inspect reports numbers that do not match the file
  *  7 the MCP server has the wrong tools, crashes on a bad path, or leaks outside its folder: `..`,
  *    an absolute path, a link that points out, an output outside the folder
+ *  9 the MCP server starts with no folder set and reads or writes any path; an empty variable turns
+ *    the guard off; the root `/` refuses every path; the opt-out flag is silent or half set
  *  8 LibreOffice cannot open a file the CLI wrote
  */
 import { spawnSync } from "node:child_process";
@@ -41,9 +43,16 @@ import { writeXlsx } from "./xlsx.js";
 const cli = new URL("../dist/cli.js", import.meta.url).pathname;
 const book: Workbook = { sheets: [{ name: "Sales", cells: { A1: { value: "Item" }, B1: { value: 3, format: "0.00" }, C1: { value: 6, formula: "B1*2" }, D1: { value: 45000, format: "yyyy-mm-dd" } } }, { name: "Two", cells: { A1: { value: true } } }] };
 
+/** The environment of a child process: ours, with no AGENTIC_FORMATS_ variable unless the test sets one. */
+const serverEnv = (extra: Record<string, string> = {}): Record<string, string> => {
+  const env = { ...(process.env as Record<string, string>) };
+  for (const name of Object.keys(env)) if (name.startsWith("AGENTIC_FORMATS_")) delete env[name];
+  return { ...env, ...extra };
+};
+
 let dir: string;
 const at = (name: string) => join(dir, name);
-const run = (...args: string[]) => spawnSync("node", [cli, ...args], { encoding: "utf8", cwd: dir, env: { ...process.env, AGENTIC_FORMATS_ROOT: "" } });
+const run = (...args: string[]) => spawnSync("node", [cli, ...args], { encoding: "utf8", cwd: dir, env: serverEnv() });
 const json = (out: string) => JSON.parse(out) as Record<string, unknown>;
 
 beforeAll(() => {
@@ -176,10 +185,14 @@ describe("inspect", () => {
 });
 
 describe("mcp over stdio", () => {
-  const connect = async (root?: string) => {
+  /** Start the server in `dir`, with the variables given, and collect what it writes to stderr. */
+  const connect = async (env: Record<string, string> = {}) => {
     const client = new Client({ name: "probe", version: "0.0.0" });
-    await client.connect(new StdioClientTransport({ command: "node", args: [cli, "mcp"], cwd: dir, env: { ...(process.env as Record<string, string>), AGENTIC_FORMATS_ROOT: root ?? "" } }));
-    return client;
+    const transport = new StdioClientTransport({ command: "node", args: [cli, "mcp"], cwd: dir, env: serverEnv(env), stderr: "pipe" });
+    const stderr = { text: "" };
+    transport.stderr?.on("data", (chunk: Buffer) => (stderr.text += chunk.toString()));
+    await client.connect(transport);
+    return Object.assign(client, { stderr });
   };
   const call = async (client: Client, name: string, args: Record<string, unknown>) => {
     const result = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
@@ -227,7 +240,7 @@ describe("mcp over stdio", () => {
     writeFileSync(join(root, "in.odt"), readFileSync(at("doc.odt")));
     writeFileSync(join(outside, "secret.odt"), readFileSync(at("doc.odt")));
     symlinkSync(outside, join(root, "escape"));
-    const client = await connect(root);
+    const client = await connect({ AGENTIC_FORMATS_ROOT: root });
     try {
       expect(await call(client, "inspect_file", { path: "in.odt" })).toMatchObject({ isError: false });
       expect(await call(client, "convert_file", { input: "in.odt", output: "out.docx" })).toMatchObject({ isError: false });
@@ -243,6 +256,99 @@ describe("mcp over stdio", () => {
     } finally {
       await client.close();
     }
+  });
+});
+
+describe("mcp path policy", () => {
+  const connect = async (env: Record<string, string> = {}) => {
+    const client = new Client({ name: "probe", version: "0.0.0" });
+    const transport = new StdioClientTransport({ command: "node", args: [cli, "mcp"], cwd: dir, env: serverEnv(env), stderr: "pipe" });
+    const stderr = { text: "" };
+    transport.stderr?.on("data", (chunk: Buffer) => (stderr.text += chunk.toString()));
+    await client.connect(transport);
+    return Object.assign(client, { stderr });
+  };
+  const call = async (client: Client, name: string, args: Record<string, unknown>) => {
+    const result = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
+    return { isError: !!result.isError, text: result.content[0].text };
+  };
+  let elsewhere: string;
+  beforeAll(() => {
+    elsewhere = mkdtempSync(join(tmpdir(), "formats-elsewhere-"));
+    writeFileSync(join(elsewhere, "secret.odt"), readFileSync(at("doc.odt")));
+  });
+  afterAll(() => rmSync(elsewhere, { recursive: true, force: true }));
+
+  test("9 with no variable set, the folder the server starts in is the only one it reads or writes", { timeout: 60_000 }, async () => {
+    const client = await connect();
+    try {
+      expect(await call(client, "inspect_file", { path: "doc.odt" })).toMatchObject({ isError: false });
+      const read = await call(client, "read_model", { path: join(elsewhere, "secret.odt") });
+      expect(read.isError).toBe(true);
+      expect(read.text).toMatch(/outside the allowed folder/);
+      const outside = await call(client, "convert_file", { input: "doc.odt", output: join(elsewhere, "out.docx"), overwrite: true });
+      expect(outside.isError).toBe(true);
+      expect(existsSync(join(elsewhere, "out.docx"))).toBe(false);
+      expect(await call(client, "inspect_file", { path: "../" + join(elsewhere, "secret.odt").slice(1) })).toMatchObject({ isError: true });
+      expect(client.stderr.text).toContain(dir);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("9 an empty AGENTIC_FORMATS_ROOT is an error, not an open door", () => {
+    for (const value of ["", "  "]) {
+      const r = spawnSync("node", [cli, "mcp"], { encoding: "utf8", cwd: dir, env: serverEnv({ AGENTIC_FORMATS_ROOT: value }), input: "", timeout: 20_000 });
+      expect(r.status, JSON.stringify(value)).toBe(1);
+      expect(r.stderr).toMatch(/AGENTIC_FORMATS_ROOT is set but empty/);
+    }
+  });
+
+  test("9 the agentic-formats-mcp binary has the same policy", () => {
+    const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
+    const empty = spawnSync("node", [bin], { encoding: "utf8", cwd: dir, env: serverEnv({ AGENTIC_FORMATS_ROOT: "" }), input: "", timeout: 20_000 });
+    expect(empty.status).toBe(1);
+    expect(empty.stderr).toMatch(/AGENTIC_FORMATS_ROOT is set but empty/);
+    const flag = spawnSync("node", [bin], { encoding: "utf8", cwd: dir, env: serverEnv({ AGENTIC_FORMATS_UNSAFE_ANY_PATH: "yes" }), input: "", timeout: 20_000 });
+    expect(flag.status).toBe(1);
+    expect(flag.stderr).toMatch(/must be "1"/);
+  });
+
+  test("9 a root that is not a folder is an error", () => {
+    const r = spawnSync("node", [cli, "mcp"], { encoding: "utf8", cwd: dir, env: serverEnv({ AGENTIC_FORMATS_ROOT: at("doc.odt") }), input: "", timeout: 20_000 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/is not a folder/);
+  });
+
+  test("9 the root / allows every path, as the owner chose", { timeout: 60_000 }, async () => {
+    const client = await connect({ AGENTIC_FORMATS_ROOT: "/" });
+    try {
+      expect(await call(client, "inspect_file", { path: join(elsewhere, "secret.odt") })).toMatchObject({ isError: false });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("9 the opt-out flag allows any path and says so on stderr", { timeout: 60_000 }, async () => {
+    const client = await connect({ AGENTIC_FORMATS_UNSAFE_ANY_PATH: "1" });
+    try {
+      expect(await call(client, "inspect_file", { path: join(elsewhere, "secret.odt") })).toMatchObject({ isError: false });
+      expect(client.stderr.text).toMatch(/AGENTIC_FORMATS_UNSAFE_ANY_PATH=1.*any path/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("9 the opt-out flag must be exactly 1, and it cannot be set with a root", () => {
+    const start = (env: Record<string, string>) => spawnSync("node", [cli, "mcp"], { encoding: "utf8", cwd: dir, env: serverEnv(env), input: "", timeout: 20_000 });
+    for (const value of ["", "0", "true", "yes"]) {
+      const r = start({ AGENTIC_FORMATS_UNSAFE_ANY_PATH: value });
+      expect(r.status, JSON.stringify(value)).toBe(1);
+      expect(r.stderr).toMatch(/AGENTIC_FORMATS_UNSAFE_ANY_PATH must be "1"/);
+    }
+    const both = start({ AGENTIC_FORMATS_UNSAFE_ANY_PATH: "1", AGENTIC_FORMATS_ROOT: dir });
+    expect(both.status).toBe(1);
+    expect(both.stderr).toMatch(/not both/);
   });
 });
 

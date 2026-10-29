@@ -2,13 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { FORMATS, convert, formatOfName, inspect, load, modelJson, type Format } from "./convert.js";
-import { UsageError, describeError, readInput, resolveInside, writeOutput } from "./files.js";
+import { UsageError, describeError, pathPolicyFromEnv, readInput, resolvePath, writeOutput, type PathPolicy } from "./files.js";
 import { VERSION } from "./version.js";
-
-export interface McpOptions {
-  /** Limit every path to this folder. Without it a tool reads and writes any path the process can. */
-  root?: string;
-}
 
 const text = (value: unknown, isError = false) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true as const } : {}) });
 
@@ -23,7 +18,7 @@ async function guarded(body: () => unknown) {
   }
 }
 
-export function createMcpServer(options: McpOptions = {}): McpServer {
+export function createMcpServer(policy: PathPolicy): McpServer {
   const server = new McpServer({ name: "agentic-formats", version: VERSION });
   const formatOf = (path: string): Format => {
     const format = formatOfName(path);
@@ -36,7 +31,7 @@ export function createMcpServer(options: McpOptions = {}): McpServer {
     "inspect_file",
     { description: "Read a file and report what it holds: counts of blocks, sheets, or slides, and warnings. Proves the file is valid.", inputSchema: { path }, annotations: { readOnlyHint: true, openWorldHint: false } },
     ({ path: p }) => guarded(() => {
-      const file = resolveInside(p, options.root);
+      const file = resolvePath(p, policy);
       return inspect(readInput(file), formatOf(file));
     }),
   );
@@ -45,7 +40,7 @@ export function createMcpServer(options: McpOptions = {}): McpServer {
     "read_model",
     { description: "Read a file as a neutral JSON model: a text document, a workbook, or a slide deck. Image bytes are replaced by their size.", inputSchema: { path }, annotations: { readOnlyHint: true, openWorldHint: false } },
     ({ path: p }) => guarded(() => {
-      const file = resolveInside(p, options.root);
+      const file = resolvePath(p, policy);
       const loaded = load(readInput(file), formatOf(file));
       return `{"kind":"${loaded.kind}","warnings":${JSON.stringify(loaded.warnings)},"model":${modelJson(loaded.model)}}`;
     }),
@@ -59,8 +54,8 @@ export function createMcpServer(options: McpOptions = {}): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     ({ input, output, overwrite }) => guarded(() => {
-      const from = resolveInside(input, options.root);
-      const to = resolveInside(output, options.root);
+      const from = resolvePath(input, policy);
+      const to = resolvePath(output, policy);
       const result = convert(readInput(from), formatOf(from), formatOf(to));
       writeOutput(to, result.bytes, overwrite ?? false, from);
       return { input: from, output: to, from: result.from, to: result.to, bytes: result.bytes.length, warnings: result.warnings };
@@ -70,6 +65,14 @@ export function createMcpServer(options: McpOptions = {}): McpServer {
   return server;
 }
 
-export async function startMcp(options: McpOptions = {}): Promise<void> {
-  await createMcpServer(options).connect(new StdioServerTransport());
+export async function startMcp(policy: PathPolicy): Promise<void> {
+  console.error(
+    "anyPath" in policy
+      ? "agentic-formats mcp: AGENTIC_FORMATS_UNSAFE_ANY_PATH=1, so every tool reads and writes any path this process can"
+      : `agentic-formats mcp: every tool is limited to ${policy.folder}`,
+  );
+  await createMcpServer(policy).connect(new StdioServerTransport());
 }
+
+/** Start the server with the policy that the environment names. A bad variable throws a `UsageError` before anything starts. */
+export const startMcpFromEnv = (env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): Promise<void> => startMcp(pathPolicyFromEnv(env, cwd));
