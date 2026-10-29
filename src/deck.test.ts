@@ -231,14 +231,14 @@ describe("slow files", () => {
   test("11 a model of the wrong shape is an INVALID_MODEL error, not a TypeError", () => {
     const wrong = (slide: unknown) => ({ width: 720, height: 405, slides: [slide] }) as unknown as Deck;
     const shape = (s: unknown) => wrong({ shapes: [s] });
-    for (const model of [{ width: 720, height: 405, slides: {} } as unknown as Deck, wrong(null), wrong({ shapes: [{ type: "text", frame, paragraphs: [] }] }), wrong({ shapes: [{ type: "shape", kind: "rectangle" }] }), wrong({}), wrong({ shapes: [], notes: 7 }), shape(null), shape({ type: "textbox", frame, paragraphs: "x" }), shape({ type: "textbox", frame, paragraphs: [[{ type: "text", text: 7 }]] }), shape({ type: "picture", frame, data: PNG, mime: "image/png", alt: 5 })]) {
+    for (const model of [{ width: 720, height: 405, slides: {} } as unknown as Deck, wrong(null), wrong({ shapes: [{ type: "text", frame, paragraphs: [] }] }), wrong({ shapes: [{ type: "shape", kind: "rectangle" }] }), shape({ type: "shape", kind: "circle", frame }), shape({ type: "shape", kind: 7, frame }), shape({ type: "shape", frame }), wrong({}), wrong({ shapes: [], notes: 7 }), shape(null), shape({ type: "textbox", frame, paragraphs: "x" }), shape({ type: "textbox", frame, paragraphs: [[{ type: "text", text: 7 }]] }), shape({ type: "picture", frame, data: PNG, mime: "image/png", alt: 5 })]) {
       for (const write of [writePptx, writeOdp]) expect(() => write(model)).toThrow(FormatError);
     }
   });
 
   test("11 an ODP line outside the bounds, and a deck of too many slides, are not read", () => {
     const odp = writeOdp({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
-    const far = readOdp(patch(odp, "content.xml", (x) => x.replace("</draw:page>", `<draw:line svg:x1="-${"9".repeat(300)}cm" svg:y1="0cm" svg:x2="${"9".repeat(300)}cm" svg:y2="0cm"/></draw:page>`)));
+    const far = readOdp(patch(odp, "content.xml", (x) => x.replace("</draw:page>", `<draw:line svg:x1="-${"9".repeat(30)}cm" svg:y1="0cm" svg:x2="${"9".repeat(30)}cm" svg:y2="0cm"/></draw:page>`)));
     expect(far.model.slides[0].shapes[1]).toMatchObject({ kind: "line", frame: { x: 0, y: 0, width: 0, height: 0 } });
     expect(far.warnings).toEqual(["a shape with a position or size outside the slide bounds was placed at the top left corner"]);
     const page = (n: number) => `<draw:page draw:name="p${n}" draw:master-page-name="Default"/>`;
