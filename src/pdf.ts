@@ -96,7 +96,10 @@ class Pdf {
   opBytes: (n: number) => void;
   /** Blocks, paragraphs, and runs laid out, counted against `maxCells`. */
   work: (n: number) => void;
+  /** Bytes of images read to find a copy, counted against `maxTotalBytes`. */
+  hashed: (n: number) => void;
   constructor(readonly caps: Limits) {
+    this.hashed = capped(caps.maxTotalBytes, `the images are read more than ${caps.maxTotalBytes} bytes in all`);
     this.work = capped(caps.maxCells, `the file has more than ${caps.maxCells} paragraphs and runs`);
     this.opBytes = capped(caps.maxTotalBytes, `the page operators pass ${caps.maxTotalBytes} bytes`);
     this.decoded = capped(caps.maxTotalBytes, `the images unpack to more than ${caps.maxTotalBytes} bytes`);
@@ -136,6 +139,7 @@ class Pdf {
       else if (cp >= 32 && cp <= 126) out += ch;
       else if (cp >= 0xa0 && cp <= 0xff) out += ch;
       else if (WIN_ANSI.has(cp)) out += String.fromCharCode(WIN_ANSI.get(cp)!);
+      else if (cp === 11 || cp === 12) out += " ";
       else if (cp < 32 || (cp >= 0x7f && cp < 0xa0) || (cp >= 0x200b && cp <= 0x200f) || cp === 0xfeff) continue;
       else {
         out += "?";
@@ -150,6 +154,8 @@ class Pdf {
     if (!(data instanceof Uint8Array)) throw new FormatError("INVALID_MODEL", "image data must be a Uint8Array");
     const known = this.images.get(data);
     if (known !== undefined) return known ?? undefined;
+    // Hashing and comparing read every byte, and a model can hold one buffer through many views, so each look counts.
+    this.hashed(data.length);
     const key = `${data.length}:${hash(data)}`;
     const same = this.byContent.get(key);
     if (same && same.data.every((b, i) => b === data[i])) {
@@ -624,7 +630,7 @@ function inlineItems(ctx: Ctx, content: Inline[], width: number, dx: number, siz
     if (node.type === "text") runs.push(node);
     else if (node.type === "break") runs.push({ type: "text", text: "\n" });
     else if (node.type === "footnote") {
-      ctx.notes.push(wrap(atomsOf(ctx.pdf, [{ type: "text", text: `${ctx.notes.length + 1}. ` }, ...(node.content.map((n) => (n.type === "break" ? { type: "text", text: " " } : n)) as TextRun[])], false), 9, PAGE_W - 2 * MARGIN));
+      ctx.notes.push(wrap(atomsOf(ctx.pdf, [{ type: "text", text: `${ctx.notes.length + 1}. ` }, ...(node.content.map((n) => (n.type === "break" ? { type: "text", text: "\n" } : n)) as TextRun[])], false), 9, PAGE_W - 2 * MARGIN));
       runs.push({ type: "text", text: `[${ctx.notes.length}]` });
     } else {
       flush();
@@ -698,7 +704,7 @@ function tableItems(ctx: Ctx, block: Extract<Block, { type: "table" }>, width: n
         while (end > 0 && c[end - 1].gap) end--;
         return Math.max(m, c.slice(0, end).reduce((n, i) => n + i.h, 0));
       }, 0);
-      if (content + 2 * CELL_PAD > CONTENT_H) ctx.pdf.warnings.add("a table row taller than a page was cut to fit");
+      if (content + CELL_PAD > CONTENT_H) ctx.pdf.warnings.add("a table row taller than a page was cut to fit");
       h = CONTENT_H;
     }
     out.push({

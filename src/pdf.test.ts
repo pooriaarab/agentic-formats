@@ -275,7 +275,7 @@ describe("PDF writer", () => {
     expect(latin(bytes).match(/\/Subtype \/Image/g)).toHaveLength(2);
     // The 1x1 fixture unpacks to 6 bytes: a budget of 6 bytes refuses it (as unpacked pixels or as output).
     const one = { blocks: copies.slice(0, 1) };
-    expect(() => writePdf(one, { maxTotalBytes: 6 })).toThrow(/unpack|passes/);
+    expect(() => writePdf(one, { maxTotalBytes: 6 })).toThrow(/unpack|passes|read more/);
     expect(() => writePdf(one, { maxTotalBytes: 100_000 })).not.toThrow();
   });
 
@@ -534,6 +534,13 @@ describe("PDF writer, review round 4", () => {
     expect(() => writePdf(deck, { maxCells: 1000 })).toThrow(FormatError);
     const jpeg = Uint8Array.of(0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 0xff, 0xff, 0xff, 0xff, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xd9);
     expect(() => writePdf({ blocks: [{ type: "paragraph", content: [{ type: "image", data: jpeg, mime: "image/jpeg" }] }] })).toThrow(/unpack/);
+  });
+
+  test("7 views of one big image are charged for each look", () => {
+    const big = new Uint8Array(PNG.length + 100_000);
+    big.set(PNG);
+    const shapes = Array.from({ length: 50 }, (_, i) => ({ type: "picture" as const, data: new Uint8Array(big.buffer, 0, big.length - (i % 2)), mime: "image/png" as const, frame: { x: 0, y: 0, width: 5, height: 5 } }));
+    expect(() => writePdf({ width: 100, height: 100, slides: [{ shapes }] }, { maxTotalBytes: 1_000_000 })).toThrow(FormatError);
   });
 });
 
