@@ -55,7 +55,7 @@ export const textFixture: TextDoc = {
     { type: "paragraph", content: [{ type: "text", text: "Image: " }, { type: "image", data: PNG, mime: "image/png", alt: "a red dot", width: 72, height: 36 }, { type: "text", text: " ends." }] },
     {
       type: "paragraph",
-      content: [{ type: "text", text: "Claim" }, { type: "footnote", content: [{ type: "text", text: "See " }, { type: "text", text: "source", marks: ["italic"] }, { type: "break" }, { type: "text", text: "page 4." }] }, { type: "text", text: " holds." }],
+      content: [{ type: "text", text: "Claim" }, { type: "footnote", content: [{ type: "text", text: "See " }, { type: "text", text: "source", marks: ["italic"] }, { type: "break" }, { type: "text", text: "page 4, " }, { type: "text", text: "online", href: "https://example.org/note" }, { type: "text", text: "." }] }, { type: "text", text: " holds." }],
     },
   ],
 };

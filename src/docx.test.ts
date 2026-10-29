@@ -176,6 +176,42 @@ describe("hostile files", () => {
   });
 });
 
+describe("a link inside a footnote", () => {
+  const doc: TextDoc = { blocks: [{ type: "paragraph", content: [text("claim"), { type: "footnote", content: [text("see "), { type: "text", text: "source", href: "https://example.org/n" }] }] }] };
+
+  test("11 the link is written to the footnotes part, which has relationships of its own, and reads back", () => {
+    const all = files(writeDocx(doc).bytes);
+    expect(strFromU8(all["word/_rels/footnotes.xml.rels"])).toContain('Target="https://example.org/n"');
+    wellFormed(strFromU8(all["word/_rels/footnotes.xml.rels"]));
+    expect(strFromU8(all["word/_rels/document.xml.rels"])).not.toContain("example.org/n");
+    const read = readDocx(writeDocx(doc).bytes);
+    expect(read.model).toEqual(normalizeTextDoc(doc));
+    expect(read.warnings).toEqual([]);
+  });
+
+  test("11 a link id in a footnote is not read from the document's relationships, and only a hyperlink is a link", () => {
+    const withoutRels = Object.entries(files(writeDocx(doc).bytes))
+      .filter(([name]) => name !== "word/_rels/footnotes.xml.rels")
+      .map(([name, data]) => ({ name, data }));
+    const read = readDocx(writeZip(withoutRels, withLimits()));
+    expect(JSON.stringify(read.model)).not.toMatch(/styles\.xml|example\.org/);
+    expect(read.warnings).toEqual(["a link whose relationship is missing or is not a link was read as plain text"]);
+    // The id names the document's styles relationship, not a link.
+    const styles = patch(writeDocx({ blocks: [para("x")] }).bytes, "word/document.xml", (x) => x.replace("<w:r>", `<w:hyperlink r:id="rId1"><w:r><w:t>y</w:t></w:r></w:hyperlink><w:r>`));
+    const toStyles = readDocx(styles);
+    expect(JSON.stringify(toStyles.model)).not.toContain("styles.xml");
+    expect(toStyles.warnings).toEqual(["a link whose relationship is missing or is not a link was read as plain text"]);
+  });
+
+  test("11 an image or a note inside a footnote that is dropped on read is reported", () => {
+    const two: TextDoc = { blocks: [{ type: "paragraph", content: [{ type: "footnote", content: [text("one")] }, { type: "footnote", content: [text("two")] }] }] };
+    const base = writeDocx(two).bytes;
+    // The second note holds a reference to the first, which the model cannot hold.
+    const read = readDocx(patch(base, "word/footnotes.xml", (x) => x.replace(/(<w:footnote w:id="2">.*?)<\/w:p>/, `$1<w:r><w:footnoteReference w:id="1"/></w:r></w:p>`)));
+    expect(read.warnings).toContain("an image or a note inside a footnote: not imported");
+  });
+});
+
 describe("a footnote that many references point to", () => {
   const base = writeDocx({ blocks: [para("x")] }).bytes;
   const runs = Array.from({ length: 2000 }, (_, i) => `<w:r>${i % 2 ? "<w:rPr><w:b/></w:rPr>" : ""}<w:t>n${i}</w:t></w:r>`).join("");
@@ -213,13 +249,14 @@ describe("a footnote that many references point to", () => {
 });
 
 describe("a writer that gets one object in many places", () => {
-  const overCap = (doc: TextDoc, limits = { maxTotalBytes: 2_000_000 }) => {
+  const overCap = (doc: TextDoc, limits = { maxTotalBytes: 2_000_000 }, message = /while it is written|characters of text/) => {
     const started = Date.now();
     try {
       writeDocx(doc, limits);
     } catch (error) {
       expect(error).toBeInstanceOf(FormatError);
       expect((error as FormatError).code).toBe("LIMIT_EXCEEDED");
+      expect((error as FormatError).message).toMatch(message);
       expect(Date.now() - started).toBeLessThan(5000);
       return;
     }
@@ -277,7 +314,27 @@ describe("a writer that gets one object in many places", () => {
 
   test("10 empty lists charge the numbering they add", () => {
     const empty = { type: "list" as const, ordered: false, items: [] };
-    overCap({ blocks: Array.from({ length: 100_000 }, () => empty) }, { maxTotalBytes: 1_000_000 });
+    overCap({ blocks: Array.from({ length: 100_000 }, () => empty) }, { maxTotalBytes: 1_000_000 }, /passes 1000000 bytes while it is written/);
+  });
+
+  test("10 a run with a text or link that is not a string, and a deep or cyclic model, are refused with a FormatError", () => {
+    const doc = (run: unknown) => ({ blocks: [{ type: "paragraph", content: [run] }] }) as unknown as TextDoc;
+    for (const run of [{ type: "text", text: Array(100).fill("a".repeat(1000)) }, { type: "text", text: 7 }, { type: "text", text: "x", href: { length: -1e15 } }]) {
+      expect(() => writeDocx(doc(run)), JSON.stringify(run)).toThrow(/needs text and a link that are strings/);
+    }
+    expect(() => writeDocx(doc(null))).toThrow(/is not an object/);
+    expect(() => writeDocx({ blocks: [{ type: "list", ordered: false }] } as unknown as TextDoc)).toThrow(/needs a list of items/);
+    expect(() => writeDocx({ blocks: [{ type: "paragraph", content: [{ type: "image", data: "x", mime: "image/png" }] }] } as unknown as TextDoc)).toThrow(/Uint8Array/);
+    let deep: Block = { type: "list", ordered: false, items: [{ content: [] }] };
+    for (let i = 0; i < 20_000; i++) deep = { type: "list", ordered: false, items: [{ content: [], sublist: deep as List }] };
+    overCap({ blocks: [deep] }, undefined, /nests lists and tables deeper/);
+    const cyclic = { type: "table" as const, rows: [[[] as Block[]]] };
+    cyclic.rows[0][0].push(cyclic);
+    overCap({ blocks: [cyclic] }, undefined, /nests lists and tables deeper/);
+  });
+
+  test("10 one run of eight million newlines is refused before its XML is made", () => {
+    overCap({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "\n".repeat(8_000_000) }] }] }, { maxTotalBytes: 100_000_000 }, /while it is written/);
   });
 
   test("10 a model node of an unknown kind is an INVALID_MODEL error, not a TypeError", () => {
@@ -292,7 +349,7 @@ describe("a writer that gets one object in many places", () => {
     const read = readDocx(patch(base, "word/document.xml", (x) => x.replace("<w:body>", `<w:body><w:sdt><w:sdtContent>${paragraphs}</w:sdtContent></w:sdt>`)));
     expect(read.model.blocks.length).toBeGreaterThan(200_000);
     const row = [[para("x")]];
-    expect(writeDocx({ blocks: [{ type: "table", rows: Array.from({ length: 200_000 }, () => row) }] }, { maxTotalBytes: 100_000_000 }).bytes.length).toBeGreaterThan(0);
+    expect(writeDocx({ blocks: [{ type: "table", rows: Array.from({ length: 150_000 }, () => row) }] }, { maxTotalBytes: 200_000_000 }).bytes.length).toBeGreaterThan(0);
   });
 });
 

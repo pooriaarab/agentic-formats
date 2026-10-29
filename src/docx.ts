@@ -2,6 +2,7 @@ import { frameSize, sniffImage } from "./image.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import {
   MARKS,
+  checkRun,
   normalizeInline,
   normalizeTextDoc,
   type Block,
@@ -67,6 +68,12 @@ const abstractNum = (id: number, ordered: boolean) =>
 interface Out {
   /** Hyperlinks and images, as relationships of the document part. */
   rels: { id: string; type: string; target: string; external?: boolean }[];
+  /** Hyperlinks inside footnotes: relationships of the footnotes part, which has ids of its own. */
+  noteRels: { id: string; type: string; target: string; external?: boolean }[];
+  inNote: boolean;
+  /** Lists and tables that are open now, and the most the writer allows. A deep or cyclic model fails before the stack does. */
+  depth: number;
+  maxDepth: number;
   media: ZipEntry[];
   nums: boolean[]; // one entry per list; true when ordered
   notes: string[];
@@ -105,23 +112,52 @@ function imageXml(node: InlineImage, out: Out): string {
   );
 }
 
+/** The most characters one run can need, found without making them: its text, the tags around each piece, and a tag for each tab or newline. */
+function runBound(text: string): number {
+  let n = text.length + 160;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\t" || c === "\n") n += 48;
+    else if (c === "&" || c === "<" || c === ">" || c === '"') n += 5;
+  }
+  return n;
+}
+
 function runXml(run: TextRun, out: Out): string {
+  checkRun(run);
   out.charge(run.text.length + (run.href?.length ?? 0));
+  // The worst case counts before the string exists: a tab or a newline grows to a tag, a quote to six characters, and a link adds a relationship.
+  out.bytes(runBound(run.text) + 6 * (run.href?.length ?? 0) + (run.href === undefined ? 0 : 200));
   const href = run.href === undefined ? undefined : safeHref(run.href);
   if (run.href !== undefined && !href) out.warnings.add("a link with an unsafe target was written as plain text");
   const props = (href ? '<w:rStyle w:val="Hyperlink"/>' : "") + RPR_ORDER.filter((m) => run.marks?.includes(m)).map((m) => MARK_XML[m]).join("");
   const xml = `<w:r>${props ? `<w:rPr>${props}</w:rPr>` : ""}${textPieces(run.text)}</w:r>`;
   if (!href) return xml;
   if (href.startsWith("#")) return `<w:hyperlink w:anchor="${esc(href.slice(1))}">${xml}</w:hyperlink>`;
-  const id = nextId(out);
-  out.rels.push({ id, type: "hyperlink", target: href, external: true });
+  // A footnote link belongs to the footnotes part, whose relationships are not the document's.
+  const rels = out.inNote ? out.noteRels : out.rels;
+  const id = out.inNote ? `rId${rels.length + 1}` : nextId(out);
+  rels.push({ id, type: "hyperlink", target: href, external: true });
   return `<w:hyperlink r:id="${id}">${xml}</w:hyperlink>`;
 }
 
+/** The runs of a footnote. Their links go to the footnotes part. */
+function noteContent(nodes: Inline[], out: Out): string {
+  const before = out.inNote;
+  out.inNote = true;
+  try {
+    return inlineXml(nodes, out);
+  } finally {
+    out.inNote = before;
+  }
+}
+
 function inlineXml(nodes: Inline[], out: Out): string {
+  if (!Array.isArray(nodes)) throw new FormatError("INVALID_MODEL", "the content of a block must be a list");
   return nodes
     .map((node) => {
       const xml = ((): string => {
+        if (typeof node !== "object" || node === null) throw new FormatError("INVALID_MODEL", "a piece of inline content is not an object");
         switch (node.type) {
           case "text":
             return runXml(node, out);
@@ -131,7 +167,7 @@ function inlineXml(nodes: Inline[], out: Out): string {
             return imageXml(node, out);
           case "footnote": {
             const id = out.notes.length + 1;
-            const note = `<w:footnote w:id="${id}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r>${inlineXml(node.content, out)}</w:p></w:footnote>`;
+            const note = `<w:footnote w:id="${id}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r>${noteContent(node.content, out)}</w:p></w:footnote>`;
             out.bytes(note.length);
             out.notes.push(note);
             return `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="${id}"/></w:r>`;
@@ -140,7 +176,8 @@ function inlineXml(nodes: Inline[], out: Out): string {
             throw new FormatError("INVALID_MODEL", `"${(node as { type?: unknown }).type}" is not a kind of inline content`);
         }
       })();
-      out.bytes(xml.length);
+      // A run charged its own XML already.
+      if (node.type !== "text") out.bytes(xml.length);
       return xml;
     })
     .join("");
@@ -150,7 +187,23 @@ function inlineXml(nodes: Inline[], out: Out): string {
 const numXml = (id: number, ordered: boolean): string =>
   `<w:num w:numId="${id}"><w:abstractNumId w:val="${ordered ? 1 : 0}"/>${Array.from({ length: 9 }, (_, l) => `<w:lvlOverride w:ilvl="${l}"><w:startOverride w:val="1"/></w:lvlOverride>`).join("")}</w:num>`;
 
+/** Run `body` one level deeper. */
+function nested<T>(out: Out, body: () => T): T {
+  if (out.depth >= out.maxDepth) throw new FormatError("LIMIT_EXCEEDED", `the document nests lists and tables deeper than ${out.maxDepth} levels`);
+  out.depth++;
+  try {
+    return body();
+  } finally {
+    out.depth--;
+  }
+}
+
 function listXml(list: List, depth: number, out: Out): string {
+  return nested(out, () => listXmlOf(list, depth, out));
+}
+
+function listXmlOf(list: List, depth: number, out: Out): string {
+  if (!Array.isArray(list.items)) throw new FormatError("INVALID_MODEL", "a list needs a list of items");
   if (depth > 8) out.warnings.add("a list nests deeper than nine levels: the deepest levels were flattened");
   const level = Math.min(depth, 8);
   const numId = out.nums.push(list.ordered);
@@ -168,6 +221,11 @@ function listXml(list: List, depth: number, out: Out): string {
 }
 
 function tableXml(table: Table, out: Out): string {
+  return nested(out, () => tableXmlOf(table, out));
+}
+
+function tableXmlOf(table: Table, out: Out): string {
+  if (!Array.isArray(table.rows) || table.rows.some((row) => !Array.isArray(row))) throw new FormatError("INVALID_MODEL", "a table needs rows that are lists of cells");
   const columns = table.rows.reduce((n, r) => Math.max(n, r.length), 1);
   const width = Math.floor(9000 / columns);
   const row = (cells: Block[][], header: boolean) =>
@@ -212,6 +270,10 @@ export function writeDocx(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
   const caps = withLimits(limits);
   const out: Out = {
     rels: [],
+    noteRels: [],
+    inNote: false,
+    depth: 0,
+    maxDepth: caps.maxXmlDepth,
     media: [],
     nums: [],
     notes: [],
@@ -261,6 +323,7 @@ export function writeDocx(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
       { name: "word/styles.xml", data: STYLES },
       { name: "word/numbering.xml", data: numbering },
       { name: "word/footnotes.xml", data: footnotes },
+      ...(out.noteRels.length ? [{ name: "word/_rels/footnotes.xml.rels", data: relsXml(out.noteRels) }] : []),
       ...entries,
       ...out.media,
     ],
@@ -359,11 +422,21 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   /** Notes already placed. A note belongs to one reference; a repeat would copy its whole content again. */
   const placed = new Set<string>();
   const notesPart = partOf("footnotes");
+  /** The relationships that links in the part being read resolve against: the document's, or the footnotes part's. */
+  let activeRels = rels;
   const readNote = (note: XmlElement): Footnote => {
-    const content = elementsOf(note)
-      .filter((p) => p.name === "w:p")
-      .flatMap((p, i): Inline[] => [...(i ? [{ type: "break" } as const] : []), ...inline(p, [], undefined)]);
-    return { type: "footnote", content: content.filter((n): n is TextRun | { type: "break" } => n.type === "text" || n.type === "break") };
+    const before = activeRels;
+    activeRels = notesPart ? pkg.rels(notesPart) : rels;
+    try {
+      const content = elementsOf(note)
+        .filter((p) => p.name === "w:p")
+        .flatMap((p, i): Inline[] => [...(i ? [{ type: "break" } as const] : []), ...inline(p, [], undefined)]);
+      const kept = content.filter((n): n is TextRun | { type: "break" } => n.type === "text" || n.type === "break");
+      if (kept.length !== content.length) warn("an image or a note inside a footnote");
+      return { type: "footnote", content: kept };
+    } finally {
+      activeRels = before;
+    }
   };
 
   function inline(parent: XmlElement, marks: Mark[], href: string | undefined): Inline[] {
@@ -406,7 +479,10 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
           });
         }
         case "w:hyperlink": {
-          const target = c.attrs["w:anchor"] ? `#${c.attrs["w:anchor"]}` : rels.get(c.attrs["r:id"] ?? "")?.target;
+          const rel = c.attrs["r:id"] ? activeRels.get(c.attrs["r:id"]) : undefined;
+          // Only an external hyperlink relationship is a link: an id that names the styles part, or a missing id, is not.
+          const target = c.attrs["w:anchor"] ? `#${c.attrs["w:anchor"]}` : rel?.kind === "hyperlink" && rel.external ? rel.target : undefined;
+          if (c.attrs["r:id"] && !c.attrs["w:anchor"] && target === undefined) warnings.add("a link whose relationship is missing or is not a link was read as plain text");
           const safe = safeHref(target);
           if (target !== undefined && !safe) warnings.add("a link with an unsafe target was read as plain text");
           return inline(c, marks, safe ?? href);
