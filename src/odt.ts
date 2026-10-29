@@ -3,6 +3,7 @@ import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import {
   MARKS,
   normalizeInline,
+  checkRun,
   mergeMarks,
   normalizeTextDoc,
   textLength,
@@ -20,7 +21,7 @@ import {
   type TextRun,
   type WriteResult,
 } from "./model.js";
-import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, spaced, writeOdfPackage, type OdfImage } from "./odf.js";
+import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, spaced, spacedBound, writeOdfPackage, type OdfImage } from "./odf.js";
 import { childOf, elementsOf, safeHref, textOf, xmlEscape as esc, type XmlElement } from "./xml.js";
 
 export const ODT_MIME = "application/vnd.oasis.opendocument.text";
@@ -66,6 +67,9 @@ interface Out {
   warnings: Set<string>;
   /** Counts the text of each run and the length of each link as it is written, so a model that holds one string many times stops at the cap. */
   charge: (chars: number) => void;
+  /** Lists and tables that are open now, and the most the writer allows. A deep or cyclic model fails before the stack does. */
+  depth: number;
+  maxDepth: number;
   /** Counts the XML as each piece is made, so a model that holds one object many times fails before one string grows past the cap. */
   bytes: (length: number) => void;
 }
@@ -85,7 +89,10 @@ function imageXml(node: InlineImage, out: Out): string {
 }
 
 function runXml(run: TextRun, out: Out): string {
+  checkRun(run);
   out.charge(run.text.length + (run.href?.length ?? 0));
+  // The worst case counts before the string exists: a newline grows to 18 characters, and a link is written once.
+  out.bytes(spacedBound(run.text) + 200 + 6 * (run.href?.length ?? 0));
   let xml = spaced(run.text);
   const marks = MARKS.filter((m) => run.marks?.includes(m));
   if (marks.length) {
@@ -98,7 +105,6 @@ function runXml(run: TextRun, out: Out): string {
     if (href) xml = `<text:a xlink:type="simple" xlink:href="${esc(href)}">${xml}</text:a>`;
     else out.warnings.add("a link with an unsafe target was written as plain text");
   }
-  out.bytes(xml.length);
   return xml;
 }
 
@@ -106,6 +112,7 @@ function inlineXml(nodes: Inline[], out: Out): string {
   return nodes
     .map((node) => {
       const xml = ((): string => {
+        if (typeof node !== "object" || node === null) throw new FormatError("INVALID_MODEL", "a piece of inline content is not an object");
         switch (node.type) {
           case "text":
             return runXml(node, out);
@@ -117,6 +124,8 @@ function inlineXml(nodes: Inline[], out: Out): string {
             const n = ++out.notes;
             return `<text:note text:id="ftn${n}" text:note-class="footnote"><text:note-citation>${n}</text:note-citation><text:note-body><text:p text:style-name="Footnote">${inlineXml(node.content, out)}</text:p></text:note-body></text:note>`;
           }
+          default:
+            throw new FormatError("INVALID_MODEL", `"${(node as { type?: unknown }).type}" is not a kind of inline content`);
         }
       })();
       // A run charged its own XML already.
@@ -126,7 +135,22 @@ function inlineXml(nodes: Inline[], out: Out): string {
     .join("");
 }
 
+/** Run `body` one level deeper. */
+function nested<T>(out: Out, body: () => T): T {
+  if (out.depth >= out.maxDepth) throw new FormatError("LIMIT_EXCEEDED", `the document nests lists and tables deeper than ${out.maxDepth} levels`);
+  out.depth++;
+  try {
+    return body();
+  } finally {
+    out.depth--;
+  }
+}
+
 function listXml(list: List, out: Out): string {
+  return nested(out, () => listXmlOf(list, out));
+}
+
+function listXmlOf(list: List, out: Out): string {
   const items = list.items.map((item) => {
     const xml = `<text:list-item><text:p text:style-name="Standard">${inlineXml(item.content, out)}</text:p>${item.sublist ? listXml(item.sublist, out) : ""}</text:list-item>`;
     out.bytes(xml.length);
@@ -136,6 +160,10 @@ function listXml(list: List, out: Out): string {
 }
 
 function tableXml(table: Table, out: Out): string {
+  return nested(out, () => tableXmlOf(table, out));
+}
+
+function tableXmlOf(table: Table, out: Out): string {
   const columns = table.rows.reduce((n, r) => Math.max(n, r.length), 0);
   const row = (cells: Block[][]) =>
     `<table:table-row>${Array.from({ length: columns }, (_, i) => {
@@ -167,6 +195,8 @@ function blockXmlOf(block: Block, out: Out): string {
       return listXml(block, out);
     case "table":
       return tableXml(block, out);
+    default:
+      throw new FormatError("INVALID_MODEL", `"${(block as { type?: unknown } | null)?.type}" is not a kind of block`);
   }
 }
 
@@ -178,6 +208,8 @@ export function writeOdt(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
     spans: new Map(),
     tables: 0,
     notes: 0,
+    depth: 0,
+    maxDepth: caps.maxXmlDepth,
     warnings: new Set(),
     charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`),
     bytes: capped(caps.maxTotalBytes, `the document passes ${caps.maxTotalBytes} bytes while it is written`),

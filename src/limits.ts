@@ -67,6 +67,8 @@ export class FormatError extends Error {
 export function capped(limit: number, message: string): (amount: number) => void {
   let used = 0;
   return (amount) => {
+    // A size from a value of the wrong type (a number that is NaN or negative) must not switch the cap off.
+    if (!Number.isFinite(amount) || amount < 0) throw new FormatError("INVALID_MODEL", "a size that is not a number of zero or more");
     used += amount;
     if (used > limit) throw new FormatError("LIMIT_EXCEEDED", message);
   };

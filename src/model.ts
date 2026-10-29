@@ -2,6 +2,7 @@
  * The neutral models. Each format reader fills one of them and each writer takes one, so an app
  * converts once and never touches zip or XML. Lengths are in points (1/72 inch).
  */
+import { FormatError } from "./limits.js";
 
 /** What a reader returns: the model, plus every part of the file that had no place in it. */
 export interface ReadResult<T> {
@@ -19,6 +20,11 @@ export interface WriteResult {
 
 export type Mark = "bold" | "italic" | "underline" | "strike" | "code" | "superscript" | "subscript";
 /** The order in which a model lists the marks of a run. */
+/** Refuse a run whose text or link is not a string: a size taken from the wrong type would pass every count. */
+export function checkRun(run: TextRun): void {
+  if (typeof run?.text !== "string" || (run.href !== undefined && typeof run.href !== "string")) throw new FormatError("INVALID_MODEL", "a text run needs text and a link that are strings");
+}
+
 export const MARKS: readonly Mark[] = ["bold", "italic", "underline", "strike", "code", "superscript", "subscript"];
 
 export type ImageMime = "image/png" | "image/jpeg" | "image/gif";

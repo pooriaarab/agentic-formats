@@ -18,6 +18,8 @@
  * 13 one big paragraph in a repeated table cell fills the output once for each copy
  * 14 a few bytes of <text:s> expand to millions of spaces; nested spans stack the same marks again
  *    and again; one image part named by many frames; a writer holds one object many times
+ * 16 a run field of the wrong type turns a cap off; a deep or cyclic model ends in a stack overflow;
+ *    one huge run is built before it is charged
  */
 import { DOMParser } from "@xmldom/xmldom";
 import { strFromU8, unzipSync } from "fflate";
@@ -174,6 +176,8 @@ describe("write guards", () => {
   });
 });
 
+const text = (t: string) => ({ type: "text" as const, text: t });
+
 describe("hostile files", () => {
   const odt = (content: string, mime = "application/vnd.oasis.opendocument.text", extra: { name: string; data: Uint8Array }[] = []) =>
     writeZip([{ name: "mimetype", data: mime, store: true }, { name: "content.xml", data: content }, ...extra], withLimits());
@@ -315,6 +319,38 @@ describe("hostile files", () => {
     const table = { type: "table" as const, rows: Array.from({ length: 200_000 }, () => row) };
     const written = writeOdt({ blocks: [table] }, withLimits({ maxTotalBytes: 100_000_000 }));
     expect(written.bytes.length).toBeGreaterThan(0);
+  });
+
+  test("16 a run whose text or link is not a string is refused, and cannot turn a cap off", () => {
+    const doc = (run: unknown) => ({ blocks: [{ type: "paragraph", content: [run] }] }) as unknown as TextDoc;
+    const runs = [
+      { type: "text", text: Array(100).fill("a".repeat(1000)) },
+      { type: "text", text: 7 },
+      { type: "text", text: "x", href: { length: -1e15 } },
+      { type: "text", text: "x", href: 5 },
+    ];
+    for (const run of runs) expect(() => writeOdt(doc(run)), JSON.stringify(run)).toThrow(/needs text and a link that are strings/);
+    expect(() => writeOdt(doc(null))).toThrow(/is not an object/);
+    expect(() => writeOdt(doc({ type: "bar" }))).toThrow(/is not a kind of inline content/);
+  });
+
+  test("16 a deep or cyclic model is refused with a FormatError before the stack ends", () => {
+    let deepList: Block = { type: "list", ordered: false, items: [{ content: [] }] };
+    for (let i = 0; i < 20_000; i++) deepList = { type: "list", ordered: false, items: [{ content: [], sublist: deepList as Extract<Block, { type: "list" }> }] };
+    limitExceeded(() => writeOdt({ blocks: [deepList] }));
+    const cyclicList = { type: "list" as const, ordered: false, items: [{ content: [] } as { content: never[]; sublist?: unknown }] };
+    cyclicList.items[0].sublist = cyclicList;
+    limitExceeded(() => writeOdt({ blocks: [cyclicList as unknown as Block] }));
+    const cyclicTable = { type: "table" as const, rows: [[[] as Block[]]] };
+    cyclicTable.rows[0][0].push(cyclicTable);
+    limitExceeded(() => writeOdt({ blocks: [cyclicTable] }));
+    expect(writeOdt({ blocks: [{ type: "list", ordered: false, items: [{ content: [], sublist: { type: "list", ordered: false, items: [{ content: [text("x")] }] } }] }] }).bytes.length).toBeGreaterThan(0);
+  });
+
+  test("16 one run of eight million newlines is refused before its XML is made", () => {
+    const started = Date.now();
+    limitExceeded(() => writeOdt({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "\n".repeat(8_000_000) }] }] }));
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 
   test("15 a run of newlines is charged as the XML it becomes, before the next piece is made", () => {

@@ -49,6 +49,21 @@ export const spaced = (s: string): string =>
       at === 0 || at + run.length === all.length ? `<text:s text:c="${run.length}"/>` : run.length > 1 ? ` <text:s text:c="${run.length - 1}"/>` : run,
     );
 
+/**
+ * The most characters `spaced(text)` can make, found without making them. A newline becomes 18, a tab 11, a
+ * quote or an angle bracket up to 6, and a space next to another space or at an end up to 20.
+ */
+export function spacedBound(text: string): number {
+  let n = text.length;
+  let previous = " ";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\n" || c === "\t" || c === "&" || c === "<" || c === ">" || c === '"' || (c === " " && (previous === " " || i === text.length - 1))) n += 20;
+    previous = c;
+  }
+  return n;
+}
+
 export interface OdfImage {
   /** Path in the package, such as `Pictures/Image1.png`. */
   path: string;
