@@ -4,7 +4,7 @@
 
 - New `writePdf(model, limits?)` writes a `Deck` (one page per slide, at the deck size) or a `TextDoc` (Letter pages) as a PDF. It returns `{ bytes, warnings }`, like the other writers. It is plain JavaScript and runs in Node and in a Worker.
 - Text, headings, nested lists, tables, footnotes, links, PNG (with alpha) and JPEG images, and the shapes of a slide are written. Text uses the standard Helvetica and Courier faces, so a character outside Latin-1 and the Windows punctuation is written as `?`.
-- The writer reports text cut to fit a slide box, images it cannot embed (GIF, other bytes, interlaced PNG), characters it cannot hold, links that are not web or mail addresses, speaker notes, super and subscript, and a table inside a table.
+- The writer reports text cut to fit a slide box, images it cannot embed (GIF, other bytes, interlaced PNG), characters it cannot hold, links that are not web or mail addresses, speaker notes, super and subscript, and a table inside a table, PNG transparency from a `tRNS` chunk, a list nested too deep for the page, and a table with more columns than fit.
 - The output is the same for the same model: a fixed creation date and fixed font names. It takes the `Limits` shape of the readers.
 - `writePdf` is in the SDK only. The CLI and the MCP tools do not convert to PDF yet.
 

@@ -70,10 +70,15 @@ class Pdf {
   objects: (Uint8Array | undefined)[] = [undefined];
   pages: Page[] = [];
   images = new Map<Uint8Array, Img | null>();
+  /** Images by their bytes, so two copies of one file are stored once. */
+  byContent = new Map<string, Img | null>();
   warnings = new Set<string>();
   charge: (n: number) => void;
   bytes: (n: number) => void;
+  /** Bytes of pixels unpacked so far, for every image together. */
+  decoded: (n: number) => void;
   constructor(readonly caps: Limits) {
+    this.decoded = capped(caps.maxTotalBytes, `the images unpack to more than ${caps.maxTotalBytes} bytes`);
     this.charge = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} characters of text`);
     this.bytes = capped(caps.maxTotalBytes, `the PDF passes ${caps.maxTotalBytes} bytes while it is written`);
   }
@@ -122,8 +127,15 @@ class Pdf {
   image(data: Uint8Array): Img | undefined {
     const known = this.images.get(data);
     if (known !== undefined) return known ?? undefined;
+    const key = `${data.length}:${hash(data)}`;
+    const same = this.byContent.get(key);
+    if (same !== undefined) {
+      this.images.set(data, same);
+      return same ?? undefined;
+    }
     const made = this.embed(data);
     this.images.set(data, made ?? null);
+    this.byContent.set(key, made ?? null);
     return made;
   }
 
@@ -156,6 +168,7 @@ class Pdf {
     if (data.length < 29 || data[28] !== 0) return skip("is an interlaced PNG");
     let palette: Uint8Array | undefined;
     const idat: Uint8Array[] = [];
+    let transparent = false;
     for (let i = 8; i + 8 <= data.length; ) {
       const len = v.getUint32(i);
       const type = String.fromCharCode(data[i + 4], data[i + 5], data[i + 6], data[i + 7]);
@@ -163,12 +176,14 @@ class Pdf {
       const body = data.subarray(i + 8, i + 8 + len);
       if (type === "PLTE") palette = body;
       else if (type === "IDAT") idat.push(body);
+      else if (type === "tRNS") transparent = true;
       else if (type === "IEND") break;
       i += 12 + len;
     }
     const joined = new Uint8Array(idat.reduce((n, c) => n + c.length, 0));
     idat.reduce((at, c) => (joined.set(c, at), at + c.length), 0);
     if (joined.length === 0) return skip("is a PNG with no pixels");
+    if (transparent && (ctype === 0 || ctype === 2 || ctype === 3)) this.warnings.add("PNG transparency from a tRNS chunk is not written");
     const colors = ctype === 2 ? 3 : ctype === 6 ? 3 : 1;
     if (ctype === 0 || ctype === 2 || ctype === 3) {
       if (ctype === 3 && (!palette || palette.length < 3 || palette.length > 768)) return skip("is a PNG with no palette");
@@ -183,6 +198,7 @@ class Pdf {
     const stride = width * bpp;
     const expected = height * (stride + 1);
     if (expected > this.caps.maxEntryBytes) throw new FormatError("LIMIT_EXCEEDED", "an image is larger than the entry limit when unpacked");
+    this.decoded(expected);
     const raw = inflateUpTo(joined, expected);
     if (!raw || raw.length !== expected) return skip("is a PNG with damaged pixels");
     const px = unfilter(raw, width, height, bpp);
@@ -226,10 +242,10 @@ class Pdf {
     });
     this.set(tree, `<</Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(" ")}] /Count ${pageIds.length}>>`);
     this.set(catalog, `<</Type /Catalog /Pages ${tree} 0 R>>`);
-    const titleHex = title ? `/Title <FEFF${[...title.slice(0, 500)].map((c) => c.codePointAt(0)!).flatMap((cp) => (cp > 0xffff ? [0xd800 + ((cp - 0x10000) >> 10), 0xdc00 + ((cp - 0x10000) & 0x3ff)] : [cp])).map((u) => u.toString(16).padStart(4, "0")).join("")}> ` : "";
+    const titleHex = title ? `/Title <FEFF${[...title].slice(0, 500).map((c) => c.codePointAt(0)!).flatMap((cp) => (cp > 0xffff ? [0xd800 + ((cp - 0x10000) >> 10), 0xdc00 + ((cp - 0x10000) & 0x3ff)] : [cp])).map((u) => u.toString(16).padStart(4, "0")).join("")}> ` : "";
     this.set(info, `<<${titleHex}/Producer (agentic-formats) /CreationDate (D:20000101000000Z)>>`);
 
-    const chunks: Uint8Array[] = [latin1("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")];
+    const chunks: Uint8Array[] = [latin1("%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")];
     const offsets: number[] = [];
     let at = chunks[0].length;
     for (let id = 1; id < this.objects.length; id++) {
@@ -246,6 +262,19 @@ class Pdf {
     chunks.reduce((o, c) => (out.set(c, o), o + c.length), 0);
     return out;
   }
+}
+
+/** A 64-bit hash (cyrb53 style) of bytes, to share two copies of one image. The length is part of the key too. */
+function hash(b: Uint8Array): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (const x of b) {
+    h1 = Math.imul(h1 ^ x, 2654435761);
+    h2 = Math.imul(h2 ^ x, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `${h1 >>> 0}.${h2 >>> 0}`;
 }
 
 /** Number of color components of a JPEG, from its first frame header. */
@@ -360,7 +389,7 @@ function wrap(atoms: Atom[], size: number, width: number): Line[] {
     for (const token of a.text.match(/ +|[^ ]+/g) ?? []) {
       const tw = [...token].reduce((n, c) => n + (charWidth(c.charCodeAt(0), a.face) * size) / 1000, 0);
       if (token[0] === " ") {
-        if (used > 0 && used + tw <= w) push(token, a, tw);
+        if ((used > 0 || lines.length === 0) && used + tw <= w) push(token, a, tw);
         continue;
       }
       if (used > 0 && used + tw > w) wrapAt();
@@ -519,16 +548,22 @@ const plainText = (blocks: Block[]): string =>
     .join("\n");
 const plainList = (list: List): string => list.items.map((i) => `${i.content.map((n) => (n.type === "text" ? n.text : "")).join("")}${i.sublist ? `\n${plainList(i.sublist)}` : ""}`).join("\n");
 
+/** The most a list can indent: past this the text has no room, so deeper levels share the last indent. */
+const maxIndent = (width: number): number => Math.max(0, Math.floor(width / 2 / 18) * 18);
+
 function listItems(ctx: Ctx, list: List, width: number, dx: number): Item[] {
   const out: Item[] = [];
+  if (dx > maxIndent(width)) {
+    ctx.pdf.warnings.add("a list nested too deep was written at the deepest indent that fits");
+    dx = maxIndent(width);
+  }
   list.items.forEach((item, i) => {
     const marker = list.ordered ? `${i + 1}.` : "\x95";
     const inner = inlineItems(ctx, item.content, width, dx + 18, BODY, false);
-    const first = inner.findIndex((n) => n.h === BODY * 1.3);
-    const lead = first >= 0 ? inner[first] : undefined;
-    // Draw the marker with the first line of the item.
-    if (lead) inner[first] = { h: lead.h, draw: (page, x, top) => (drawLine(page, [{ text: marker, face: "F1", width: 0 }], BODY, x + dx, PAGE_H - top - BODY), lead.draw(page, x, top)) };
-    else inner.unshift({ h: BODY * 1.3, draw: (page, x, top) => drawLine(page, [{ text: marker, face: "F1", width: 0 }], BODY, x + dx, PAGE_H - top - BODY) });
+    const drawMarker = (page: Page, x: number, top: number): void => drawLine(page, [{ text: marker, face: "F1", width: 0 }], BODY, x + dx, PAGE_H - top - BODY);
+    const lead = inner[0];
+    if (lead) inner[0] = { h: lead.h, draw: (page, x, top) => (drawMarker(page, x, top), lead.draw(page, x, top)) };
+    else inner.push({ h: BODY * 1.3, draw: drawMarker });
     out.push(...inner);
     if (item.sublist) out.push(...listItems(ctx, item.sublist, width, dx + 18));
   });
@@ -539,6 +574,7 @@ function tableItems(ctx: Ctx, block: Extract<Block, { type: "table" }>, width: n
   const cols = block.rows.reduce((n, r) => Math.max(n, r.length), 0);
   if (cols === 0) return [];
   const colW = width / cols;
+  if (colW - 2 * CELL_PAD < BODY * 2) ctx.pdf.warnings.add("a table has more columns than fit: text in its cells runs past them");
   const out: Item[] = [];
   block.rows.forEach((row, r) => {
     const header = !!block.header && r === 0;
@@ -597,7 +633,10 @@ function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: n
       if (typeof node !== "object" || node === null || !["text", "break", "image", "footnote"].includes(node.type)) throw new FormatError("INVALID_MODEL", "an inline node is not text, a break, an image, or a footnote");
       if (node.type === "text") checkRun(node);
       if (node.type === "image") sniffImage(node.data);
-      if (node.type === "footnote") inline(node.content);
+      if (node.type === "footnote") {
+        inline(node.content);
+        if ((node.content as Inline[]).some((n) => n.type !== "text" && n.type !== "break")) throw new FormatError("INVALID_MODEL", "a footnote holds text and line breaks only");
+      }
     }
   };
   const list = (l: List, d: number): void => {
@@ -631,7 +670,8 @@ function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: n
 function writeText(doc: TextDoc, pdf: Pdf): void {
   checkBlocks(doc?.blocks, pdf.caps, 0, { n: 0 });
   if (doc.title !== undefined && typeof doc.title !== "string") throw new FormatError("INVALID_MODEL", "the title of a document must be a string");
-  pdf.charge(textLength(doc.blocks));
+  // The text is charged as it is encoded. Image bytes are not text: they count against the output size.
+  if (textLength(doc.blocks) > pdf.caps.maxTextChars + pdf.caps.maxTotalBytes) throw new FormatError("LIMIT_EXCEEDED", "the document is larger than the limits allow");
   const ctx: Ctx = { pdf, notes: [], depth: 0 };
   const items = flow(ctx, doc.blocks, PAGE_W - 2 * MARGIN, 0);
   if (ctx.notes.length) {

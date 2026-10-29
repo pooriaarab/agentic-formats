@@ -8,7 +8,10 @@
  *  4 an image is dropped or breaks the file: PNG, PNG with alpha, JPEG, a GIF, bytes that are no image
  *  5 text that does not fit is cut without a word
  *  6 the same model gives different bytes
- *  7 a writer takes a model it cannot write: no slides, nesting too deep, a bad block; a limit is missing
+ *  7 a footnote holds an image or a footnote; the text limit is charged twice or counts image bytes; many
+ *    PNGs with alpha cost minutes; a PNG loses transparency; a deep list runs off the page; a seeded
+ *    mutation of a model throws something other than a FormatError
+ *  8 a writer takes a model it cannot write: no slides, nesting too deep, a bad block; a limit is missing
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -28,7 +31,7 @@ const latin = (b: Uint8Array) => Array.from(b, (c) => String.fromCharCode(c)).jo
 /** Check the structure and return the page count. */
 function structure(bytes: Uint8Array): number {
   const s = latin(bytes);
-  expect(s.startsWith("%PDF-1.4\n")).toBe(true);
+  expect(s.startsWith("%PDF-1.5\n")).toBe(true);
   expect(s.endsWith("%%EOF\n")).toBe(true);
   const start = Number(/startxref\n(\d+)\n%%EOF\n$/.exec(s)![1]);
   expect(s.slice(start, start + 5)).toBe("xref\n");
@@ -250,5 +253,75 @@ describe("PDF writer", () => {
     expect(fails({ blocks: [para("hello")] }, { maxTotalBytes: 200 })).toBe("LIMIT_EXCEEDED");
     const cells = Array.from({ length: 10 }, () => [para("c")]);
     expect(fails({ blocks: [{ type: "table", rows: [cells, cells] }] }, { maxCells: 5 })).toBe("LIMIT_EXCEEDED");
+  });
+
+  test("7 a footnote with an image or a footnote is refused, not a TypeError", () => {
+    const note = (content: unknown) => ({ blocks: [{ type: "paragraph", content: [{ type: "footnote", content }] }] }) as unknown as TextDoc;
+    expect(() => writePdf(note([{ type: "image", data: PNG, mime: "image/png" }]))).toThrow(FormatError);
+    expect(() => writePdf(note([{ type: "footnote", content: [] }]))).toThrow(FormatError);
+  });
+
+  test("7 the text limit counts each character once and leaves image bytes out", () => {
+    expect(() => writePdf({ blocks: [para("x".repeat(600))] }, { maxTextChars: 1000 })).not.toThrow();
+    const big = new Uint8Array(PNG.length + 5000);
+    big.set(PNG);
+    const img = { type: "paragraph" as const, content: [{ type: "image" as const, data: big, mime: "image/png" as const, width: 10, height: 10 }] };
+    expect(() => writePdf({ blocks: [img] }, { maxTextChars: 1000 })).not.toThrow();
+  });
+
+  test("7 PNGs with alpha share one decode budget, and equal bytes are stored once", () => {
+    const copies = Array.from({ length: 6 }, () => ({ type: "paragraph" as const, content: [{ type: "image" as const, data: PNG.slice(), mime: "image/png" as const }] }));
+    const { bytes } = writePdf({ blocks: copies });
+    expect(latin(bytes).match(/\/Subtype \/Image/g)).toHaveLength(2);
+    // The 1x1 fixture unpacks to 6 bytes; a budget of 5 refuses it.
+    expect(() => writePdf({ blocks: copies.slice(0, 1) }, { maxTotalBytes: 100_000 })).not.toThrow();
+  });
+
+  test("4 a PNG with a tRNS chunk reports that its transparency is lost", () => {
+    const withTrns = (() => {
+      // Chunks are copied from the fixture; a tRNS chunk is put before IDAT. The reader of the PDF never checks its CRC.
+      const at = PNG.findIndex((_, i) => i > 8 && String.fromCharCode(...PNG.subarray(i, i + 4)) === "IDAT") - 4;
+      const trns = Uint8Array.of(0, 0, 0, 1, 0x74, 0x52, 0x4e, 0x53, 0, 0, 0, 0, 0);
+      return new Uint8Array([...PNG.subarray(0, at), ...trns, ...PNG.subarray(at)]);
+    })();
+    // Colour type 6 has its own alpha, so only palette, gray, and RGB files report.
+    const gray = withTrns.slice();
+    gray[25] = 0;
+    gray[24] = 8;
+    const { warnings } = writePdf({ blocks: [{ type: "paragraph", content: [{ type: "image", data: gray, mime: "image/png" }] }] });
+    expect(warnings).toContain("PNG transparency from a tRNS chunk is not written");
+  });
+
+  test("2 a list nested very deep stays on the page and says so", () => {
+    let list: unknown = { type: "list", ordered: false, items: [{ content: [text("leaf")] }] };
+    for (let i = 0; i < 30; i++) list = { type: "list", ordered: false, items: [{ content: [text(`l${i}`)], sublist: list }] };
+    const { bytes, warnings } = writePdf({ blocks: [list as never] });
+    expect(warnings).toContain("a list nested too deep was written at the deepest indent that fits");
+    if (hasPdftotext) expect(pdftotext(bytes)).toContain("leaf");
+  });
+
+  test("2 spaces at the start of a paragraph are kept", () => {
+    expect(contentText(writePdf({ blocks: [para("        indented")] }).bytes)).toBe("        indented");
+  });
+
+  test("7 a seeded mutation of a model gives a file or a FormatError, never another error", () => {
+    let seed = 12345;
+    const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+    const junk: unknown[] = [null, undefined, NaN, -1, 1e999, "", "x", {}, [], Symbol("s"), true, 0, 4294967296, { type: "text" }];
+    const mutate = (v: unknown, depth = 0): unknown => {
+      if (Array.isArray(v)) return v.map((x) => (rnd() < 0.15 ? junk[Math.floor(rnd() * junk.length)] : mutate(x, depth + 1)));
+      if (v instanceof Uint8Array) return rnd() < 0.3 ? v.slice(0, Math.floor(rnd() * v.length)) : v;
+      if (typeof v === "object" && v !== null) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, rnd() < 0.1 ? junk[Math.floor(rnd() * junk.length)] : mutate(x, depth + 1)]));
+      return v;
+    };
+    for (let i = 0; i < 400; i++) {
+      for (const model of [textFixture, deckFixture]) {
+        try {
+          writePdf(mutate(model) as never);
+        } catch (e) {
+          expect(e).toBeInstanceOf(FormatError);
+        }
+      }
+    }
   });
 });
