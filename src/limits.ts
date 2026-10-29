@@ -18,8 +18,12 @@ export interface Limits {
   maxXmlDepth: number;
   /** Number of elements in one XML part. */
   maxXmlElements: number;
-  /** Number of cells in a workbook. */
+  /** Number of cells in a workbook, or table cells in a text document. Repeat counts count in full. */
   maxCells: number;
+  /** Characters of text that a file repeats: cells that share one string, or table cells that repeat. Each extra copy counts. */
+  maxTextChars: number;
+  /** Length of a style's parent chain. */
+  maxStyleDepth: number;
 }
 
 export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
@@ -33,6 +37,8 @@ export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   maxXmlDepth: 100,
   maxXmlElements: 1_000_000,
   maxCells: 1_000_000,
+  maxTextChars: 8 * 1024 * 1024,
+  maxStyleDepth: 50,
 });
 
 export const withLimits = (limits?: Partial<Limits>): Limits => ({ ...DEFAULT_LIMITS, ...limits });
@@ -55,4 +61,15 @@ export class FormatError extends Error {
     super(message);
     this.name = "FormatError";
   }
+}
+
+/** A running total that throws `LIMIT_EXCEEDED` with `message` once it passes `limit`. */
+export function capped(limit: number, message: string): (amount: number) => void {
+  let used = 0;
+  return (amount) => {
+    // A size from a value of the wrong type (a number that is NaN or negative) must not switch the cap off.
+    if (!Number.isFinite(amount) || amount < 0) throw new FormatError("INVALID_MODEL", "a size that is not a number of zero or more");
+    used += amount;
+    if (used > limit) throw new FormatError("LIMIT_EXCEEDED", message);
+  };
 }

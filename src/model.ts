@@ -2,6 +2,7 @@
  * The neutral models. Each format reader fills one of them and each writer takes one, so an app
  * converts once and never touches zip or XML. Lengths are in points (1/72 inch).
  */
+import { FormatError } from "./limits.js";
 
 /** What a reader returns: the model, plus every part of the file that had no place in it. */
 export interface ReadResult<T> {
@@ -19,6 +20,20 @@ export interface WriteResult {
 
 export type Mark = "bold" | "italic" | "underline" | "strike" | "code" | "superscript" | "subscript";
 /** The order in which a model lists the marks of a run. */
+/** Refuse a run whose text or link is not a string: a size taken from the wrong type would pass every count. */
+export function checkRun(run: TextRun): void {
+  if (typeof run?.text !== "string" || (run.href !== undefined && typeof run.href !== "string")) throw new FormatError("INVALID_MODEL", "a text run needs text and a link that are strings");
+  if (run.marks !== undefined && !Array.isArray(run.marks)) throw new FormatError("INVALID_MODEL", "the marks of a text run must be a list");
+}
+
+/** Refuse a model value that is not a list, or not an object, before a writer reads into it. */
+export function checkList(value: unknown, what: string): void {
+  if (!Array.isArray(value)) throw new FormatError("INVALID_MODEL", `${what} must be a list`);
+}
+export function checkObject(value: unknown, what: string): void {
+  if (typeof value !== "object" || value === null) throw new FormatError("INVALID_MODEL", `${what} must be an object`);
+}
+
 export const MARKS: readonly Mark[] = ["bold", "italic", "underline", "strike", "code", "superscript", "subscript"];
 
 export type ImageMime = "image/png" | "image/jpeg" | "image/gif";
@@ -81,7 +96,42 @@ export interface TextDoc {
   blocks: Block[];
 }
 
-const inlineKey = (run: TextRun): string => JSON.stringify([run.marks, run.href]);
+/** Two runs read the same when their marks and their link are equal. Compares in place: a link may be megabytes long. */
+const sameStyle = (a: TextRun, b: TextRun): boolean => a.href === b.href && (a.marks?.join() ?? "") === (b.marks?.join() ?? "");
+
+/** The marks of `a` and `b` together, each once, in the canonical order. Seven entries at most, however many styles a file stacks. */
+export const mergeMarks = (a: readonly Mark[], b: readonly Mark[]): Mark[] => MARKS.filter((m) => a.includes(m) || b.includes(m));
+
+/** The size of inline content as a writer would repeat it: text and link targets, image bytes and descriptions, and one for each node, so empty nodes cost something. */
+const inlineLength = (content: Inline[]): number =>
+  content.reduce(
+    (n, node) =>
+      n +
+      (node.type === "text"
+        ? node.text.length + (node.href?.length ?? 0) + 1
+        : node.type === "footnote"
+          ? inlineLength(node.content) + 1
+          : node.type === "image"
+            ? node.data.length + (node.alt?.length ?? 0) + 1
+            : 1),
+    0,
+  );
+
+/**
+ * Characters of text in blocks, and bytes of images, counted as they are laid out: a row that appears twice counts
+ * twice. Each block, list item, and inline node counts at least one, so a thousand empty paragraphs in a cell that
+ * repeats a million times are not free.
+ */
+export function textLength(blocks: Block[]): number {
+  return blocks.reduce((n, block) => {
+    if (block.type === "table") return n + 1 + block.rows.reduce((m, row) => m + row.reduce((k, cell) => k + 1 + textLength(cell), 0), 0);
+    if (block.type === "list") {
+      const items = (list: List): number => list.items.reduce((m, item) => m + 1 + inlineLength(item.content) + (item.sublist ? items(item.sublist) : 0), 0);
+      return n + 1 + items(block);
+    }
+    return n + 1 + inlineLength(block.content);
+  }, 0);
+}
 
 /** Merge runs that look the same, drop empty ones, and put marks in the canonical order. */
 export function normalizeInline(content: Inline[]): Inline[] {
@@ -95,7 +145,7 @@ export function normalizeInline(content: Inline[]): Inline[] {
     const marks = MARKS.filter((m) => node.marks?.includes(m));
     const run: TextRun = { type: "text", text: node.text, ...(marks.length ? { marks } : {}), ...(node.href ? { href: node.href } : {}) };
     const prev = out[out.length - 1];
-    if (prev?.type === "text" && inlineKey(prev) === inlineKey(run)) prev.text += run.text;
+    if (prev?.type === "text" && sameStyle(prev, run)) prev.text += run.text;
     else out.push(run);
   }
   return out;
@@ -109,6 +159,12 @@ function normalizeList(list: List): List {
   };
 }
 
+/** A cell with one empty paragraph is an empty cell. */
+function normalizeCell(cell: Block[]): Block[] {
+  const blocks = cell.map(normalizeBlock);
+  return blocks.length === 1 && blocks[0].type === "paragraph" && blocks[0].content.length === 0 ? [] : blocks;
+}
+
 export function normalizeBlock(block: Block): Block {
   switch (block.type) {
     case "heading":
@@ -117,7 +173,7 @@ export function normalizeBlock(block: Block): Block {
     case "list":
       return normalizeList(block);
     case "table":
-      return { type: "table", ...(block.header ? { header: true } : {}), rows: block.rows.map((row) => row.map((cell) => cell.map(normalizeBlock))) };
+      return { type: "table", ...(block.header ? { header: true } : {}), rows: block.rows.map((row) => row.map(normalizeCell)) };
   }
 }
 
