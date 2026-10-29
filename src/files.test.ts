@@ -2,7 +2,7 @@ import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { UsageError, writeOutput } from "./files.js";
+import { UsageError, createNew, writeOutput } from "./files.js";
 
 const dir = mkdtempSync(join(tmpdir(), "files-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -71,5 +71,18 @@ describe("writeOutput is atomic", () => {
     expect(() => writeOutput(join(d, "out.bin"), bytes("second"), false)).toThrow(UsageError);
     expect(readFileSync(join(d, "out.bin"), "utf8")).toBe("first");
     expect(readdirSync(d)).toEqual(["out.bin"]);
+  });
+
+  test("the fallback for a filesystem with no hard links makes a new file, refuses a taken name, and never follows a link", () => {
+    const d = join(dir, "h");
+    mkdirSync(d);
+    writeFileSync(join(d, "temp"), "data");
+    createNew(join(d, "out.bin"), join(d, "temp"));
+    expect(readFileSync(join(d, "out.bin"), "utf8")).toBe("data");
+    expect(() => createNew(join(d, "out.bin"), join(d, "temp"))).toThrow(UsageError);
+    writeFileSync(join(d, "victim"), "original");
+    symlinkSync(join(d, "victim"), join(d, "link.bin"));
+    expect(() => createNew(join(d, "link.bin"), join(d, "temp"))).toThrow(UsageError);
+    expect(readFileSync(join(d, "victim"), "utf8")).toBe("original");
   });
 });

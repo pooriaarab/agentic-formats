@@ -100,8 +100,8 @@ export function readInput(path: string, limits?: Partial<Limits>): Uint8Array {
   }
 }
 
-/** Make `path` from the bytes of `temp` where a hard link is not possible. It fails if `path` exists, and never follows a link. */
-function createNew(path: string, temp: string): void {
+/** Make `path` from the bytes of `temp` where a hard link is not possible. It fails if `path` exists, and never follows a link. It is not atomic: a reader can see a part, and a failed write removes the part. */
+export function createNew(path: string, temp: string): void {
   const bytes = readFileSync(temp);
   let fd: number;
   try {
@@ -112,6 +112,11 @@ function createNew(path: string, temp: string): void {
   }
   try {
     for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
+    fsyncSync(fd);
+  } catch (error) {
+    // The file is this call's own, made with O_EXCL; a part of it must not stay.
+    rmSync(path, { force: true });
+    throw error;
   } finally {
     closeSync(fd);
   }
