@@ -1,6 +1,6 @@
 {
   "name": "agentic-formats",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.",
   "keywords": [
     "odf",
@@ -54,6 +54,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist",
+    "prepack": "npm run build",
     "ci:local": "npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
