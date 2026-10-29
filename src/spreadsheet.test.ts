@@ -438,6 +438,14 @@ describe("hostile files", () => {
     expect(read.warnings[50]).toBe("1 more warnings");
   });
 
+  test("13 one sheet name used again and again past the cap counts once", () => {
+    const names = [...Array.from({ length: 60 }, (_, i) => `c${i}`), ...Array.from({ length: 60 }, () => "dup")];
+    const entries = names.map((n, i) => `<sheet name="${n}" sheetId="${i + 10}" r:id="rIdX${i}"/>`).join("");
+    const rels = names.map((_, i) => `<Relationship Id="rIdX${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="c${i}.xml"/>`).join("");
+    const bytes = patch(patch(one, "xl/workbook.xml", (x) => x.replace("</sheets>", `${entries}</sheets>`)), "xl/_rels/workbook.xml.rels", (x) => x.replace("</Relationships>", `${rels}</Relationships>`));
+    expect(readXlsx(bytes).warnings.at(-1)).toBe("11 more warnings");
+  });
+
   test("13 rich text in an inline string is named in a warning", () => {
     const read = readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('<is><t xml:space="preserve">x</t></is>', "<is><r><rPr><b/></rPr><t>x</t></r></is>")));
     expect(read.model).toEqual(sheet("S", { A1: { value: "x" } }));

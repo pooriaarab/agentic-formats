@@ -152,13 +152,15 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   // capped, as a hostile file can name thousands of sheets or number formats; the rest is counted once each.
   const warnings = new Set<string>();
   let named = 0;
-  let unlisted = 0;
+  const unlisted = new Set<string>();
   const warn = (message: string) => warnings.add(message);
   const warnNamed = (message: string) => {
-    if (named < MAX_NAMED_WARNINGS && !warnings.has(message)) {
+    if (warnings.has(message)) return;
+    if (named < MAX_NAMED_WARNINGS) {
       named++;
       warnings.add(message);
-    } else if (!warnings.has(message)) unlisted++;
+    }
+    else unlisted.add(message);
   };
   const workbook = pkg.parse(pkg.mainPart);
   if (elementsOf(childOf(workbook, "definedNames")).length) warn("named ranges, print areas, or filters were not read");
@@ -264,5 +266,5 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
     sheets.push({ name: entry.attrs.name ?? `Sheet${sheets.length + 1}`, cells });
   }
   if (!sheets.length) throw new FormatError("INVALID_FILE", "the XLSX file has no sheet");
-  return { model: { sheets }, warnings: [...warnings, ...(unlisted ? [`${unlisted} more warnings`] : [])] };
+  return { model: { sheets }, warnings: [...warnings, ...(unlisted.size ? [`${unlisted.size} more warnings`] : [])] };
 }
