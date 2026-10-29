@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3
+
+- The README and SKILL.md list the exit codes for each command-line case, including an unknown option to `mcp`. An unknown file extension exits 1, and a wrong number of paths to `convert` or `inspect` exits 2.
+- The README documents `columnName` and `NUMBER_FORMATS`. `NUMBER_FORMATS` lists the seven number format codes that ODS and XLSX share. `columnName` returns the column letters for a column number. The code does not change.
+
 ## 0.4.2
 
 - `agentic-formats mcp --help` and `-h` print the usage and exit 0. `--version` and `-V` print the version and exit 0. Before, the subcommand started the server, and the flag waited on stdin. An unknown option after `mcp` exits 2, as it does for `agentic-formats-mcp`.
