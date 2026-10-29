@@ -17,6 +17,29 @@ describe("built package", () => {
     expect(bad.stderr).toContain('"summary" is not a valid command');
   });
 
+  test("the CLI mcp subcommand prints its help and version and exits 0 without starting the server", () => {
+    for (const flag of ["--help", "-h"]) {
+      const help = spawnSync("node", [cli, "mcp", flag], { encoding: "utf8", timeout: 5000 });
+      expect(help.error).toBeUndefined();
+      expect(help.status).toBe(0);
+      expect(help.stdout).toContain("Usage: agentic-formats <command>");
+    }
+    for (const flag of ["--version", "-V"]) {
+      const ver = spawnSync("node", [cli, "mcp", flag], { encoding: "utf8", timeout: 5000 });
+      expect(ver.error).toBeUndefined();
+      expect(ver.status).toBe(0);
+      expect(ver.stdout.trim()).toBe(version);
+    }
+  });
+
+  test("the CLI mcp subcommand refuses an unknown option with exit 2 and starts no server", () => {
+    const bad = spawnSync("node", [cli, "mcp", "--bogus", "--help"], { encoding: "utf8", timeout: 5000 });
+    expect(bad.error).toBeUndefined();
+    expect(bad.status).toBe(2);
+    expect(bad.stdout).toBe("");
+    expect(bad.stderr).toContain('unknown argument "--bogus" for mcp');
+  });
+
   test("the MCP bin prints its help and version and exits 0 without starting the server", () => {
     const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
     const help = spawnSync("node", [bin, "--help"], { encoding: "utf8", timeout: 5000 });

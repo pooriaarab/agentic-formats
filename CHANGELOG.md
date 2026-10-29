@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2
+
+- `agentic-formats mcp --help` and `-h` print the usage and exit 0. `--version` and `-V` print the version and exit 0. Before, the subcommand started the server, and the flag waited on stdin. An unknown option after `mcp` exits 2, as it does for `agentic-formats-mcp`.
+
+## 0.4.1
+
+- The README says a command-line error exits 2. That covers an unknown command, and an unknown flag or argument to `convert` or `inspect`. Every other error exits 1, such as a missing file, an unknown extension, or an output that exists. 0.4.0 said every error exits 1.
+- The README names `ODT_MIME`, `ODS_MIME`, and `ODP_MIME`, the media types of the ODF formats. The code does not change.
+
 ## 0.4.0
 
 - `agentic-formats-mcp --help` and `-h` print the usage and exit 0. `--version` and `-V` print the version and exit 0. An unknown argument exits 2. In 0.3.0 the MCP binary started the server for every argument, so `--help` waited on stdin. The `agentic-formats` CLI already behaved this way.

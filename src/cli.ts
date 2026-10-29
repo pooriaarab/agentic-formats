@@ -14,11 +14,12 @@ Commands:
   convert <in> <out> [--force]   Convert a file. The extensions pick the formats.
   inspect <file>                 Print what a file holds, as JSON.
   mcp                            Start the MCP server on stdio. Its tools read and write only
-                                 the working folder; see AGENTIC_FORMATS_ROOT below.
+                                 the working folder; see AGENTIC_FORMATS_ROOT below. Its only
+                                 options are --help and --version. Any other option exits 2.
 
 Formats: ${FORMATS.join(", ")}. A file converts to a format of its own kind:
 documents (odt, docx), spreadsheets (ods, xlsx), slide decks (odp, pptx).
-Output is JSON on stdout. Errors go to stderr and the exit code is 1.
+Output is JSON on stdout. Errors go to stderr. A command-line error exits 2; any other error exits 1.
 
 Environment (mcp only):
   AGENTIC_FORMATS_ROOT             Limit every path to this folder instead of the working folder.
@@ -28,6 +29,8 @@ Flags:
   --force          Replace the output file if it exists.
   --help, -h       Print this help.
   --version, -V    Print the version.`;
+
+const MCP_FLAGS = ["--help", "-h", "--version", "-V"];
 
 function formatOf(path: string): Format {
   const format = formatOfName(path);
@@ -46,6 +49,19 @@ export async function runCli(argv: string[]): Promise<number> {
     return 0;
   }
   if (first === "mcp") {
+    const unknown = rest.find((a) => !MCP_FLAGS.includes(a));
+    if (unknown !== undefined) {
+      console.error(`Usage error: unknown argument "${unknown}" for mcp.\nRun "agentic-formats --help" for usage.`);
+      return 2;
+    }
+    if (rest.some((a) => a === "--help" || a === "-h")) {
+      console.log(HELP);
+      return 0;
+    }
+    if (rest.some((a) => a === "--version" || a === "-V")) {
+      console.log(VERSION);
+      return 0;
+    }
     try {
       const { startMcpFromEnv } = await import("./mcp.js");
       await startMcpFromEnv();
