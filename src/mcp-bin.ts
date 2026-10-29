@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { startMcp } from "./mcp.js";
+import { describeError } from "./files.js";
+import { startMcpFromEnv } from "./mcp.js";
 
-startMcp().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
+startMcpFromEnv().catch((error: unknown) => {
+  console.error(describeError(error) ?? (error instanceof Error ? error.message : String(error)));
   process.exit(1);
 });

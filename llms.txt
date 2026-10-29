@@ -4,9 +4,9 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 
 Keywords: odf,ooxml,odt,ods,odp,docx,xlsx,pptx,office,documents,import,export,agents,mcp,cli.
 
-- SDK: import { readOdt, writeOdt, readDocx, writeDocx, readOds, writeOds, readXlsx, writeXlsx, readOdp, writeOdp, readPptx, writePptx } from "agentic-formats".
-- CLI: agentic-formats --help.
-- MCP: run agentic-formats mcp.
+- SDK: import { convert, inspect, readOdt, writeDocx } from "agentic-formats".
+- CLI: agentic-formats convert in.odt out.docx. agentic-formats inspect in.docx.
+- MCP: run agentic-formats mcp, then call inspect_file, read_model, or convert_file.
 
 ## Docs
 
