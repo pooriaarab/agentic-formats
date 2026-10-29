@@ -64,7 +64,7 @@ export function checkDeck(deck: Deck, limits: Limits): void {
         chargeText(shape.alt?.length ?? 0);
       }
       if (shape.type === "shape" && !["rectangle", "ellipse", "line"].includes(shape.kind)) bad(`${where} is not a rectangle, an ellipse, or a line`);
-      if (shape.type === "shape") for (const color of [shape.fill, shape.stroke]) if (color !== undefined && !HEX_COLOR.test(color)) bad(`${where} has a color that is not #rrggbb`);
+      if (shape.type === "shape") for (const color of [shape.fill, shape.stroke]) if (color !== undefined && (typeof color !== "string" || !HEX_COLOR.test(color))) bad(`${where} has a color that is not #rrggbb`);
     });
   });
 }

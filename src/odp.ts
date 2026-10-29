@@ -130,6 +130,7 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   const warn = (what: string) => warnings.add(`${what}: not imported`);
   // A few bytes of `<text:s text:c="1000"/>` stand for a thousand spaces, and an image part is shared by every frame that names it.
   const chargeSpaces = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} spaces in <text:s> elements`);
+  const chargeRuns = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} characters of run text and link targets`);
   const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
 
   const styles = new Map<string, { parent?: string; props: Record<string, string>; text: Mark[]; auto: boolean }>();
@@ -167,7 +168,10 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
       // A viewer underlines a link by itself, so a link run carries no underline mark.
       const run = (text: string, extra: Mark[] = marks): Inline[] => {
         const shown = href ? extra.filter((m) => m !== "underline") : extra;
-        return text ? [{ type: "text", text, ...(shown.length ? { marks: shown } : {}), ...(href ? { href } : {}) }] : [];
+        if (!text) return [];
+        // A link target is one string, but each run that carries it counts it.
+        chargeRuns(text.length + (href?.length ?? 0));
+        return [{ type: "text", text, ...(shown.length ? { marks: shown } : {}), ...(href ? { href } : {}) }];
       };
       if (typeof c === "string") return run(c.replace(/[ \t\r\n]+/g, " "));
       switch (c.name) {

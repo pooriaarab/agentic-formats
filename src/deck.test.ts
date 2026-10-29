@@ -231,9 +231,28 @@ describe("slow files", () => {
   test("11 a model of the wrong shape is an INVALID_MODEL error, not a TypeError", () => {
     const wrong = (slide: unknown) => ({ width: 720, height: 405, slides: [slide] }) as unknown as Deck;
     const shape = (s: unknown) => wrong({ shapes: [s] });
-    for (const model of [{ width: 720, height: 405, slides: {} } as unknown as Deck, wrong(null), wrong({ shapes: [{ type: "text", frame, paragraphs: [] }] }), wrong({ shapes: [{ type: "shape", kind: "rectangle" }] }), shape({ type: "shape", kind: "circle", frame }), shape({ type: "shape", kind: 7, frame }), shape({ type: "shape", frame }), wrong({}), wrong({ shapes: [], notes: 7 }), shape(null), shape({ type: "textbox", frame, paragraphs: "x" }), shape({ type: "textbox", frame, paragraphs: [[{ type: "text", text: 7 }]] }), shape({ type: "picture", frame, data: PNG, mime: "image/png", alt: 5 })]) {
+    for (const model of [{ width: 720, height: 405, slides: {} } as unknown as Deck, wrong(null), wrong({ shapes: [{ type: "text", frame, paragraphs: [] }] }), wrong({ shapes: [{ type: "shape", kind: "rectangle" }] }), shape({ type: "shape", kind: "rectangle", frame, fill: ["#ff0000"] }), shape({ type: "shape", kind: "rectangle", frame, stroke: 5 }), shape({ type: "shape", kind: "circle", frame }), shape({ type: "shape", kind: 7, frame }), shape({ type: "shape", frame }), wrong({}), wrong({ shapes: [], notes: 7 }), shape(null), shape({ type: "textbox", frame, paragraphs: "x" }), shape({ type: "textbox", frame, paragraphs: [[{ type: "text", text: 7 }]] }), shape({ type: "picture", frame, data: PNG, mime: "image/png", alt: 5 })]) {
       for (const write of [writePptx, writeOdp]) expect(() => write(model)).toThrow(FormatError);
     }
+  });
+
+  test("11 each run that names a shared link target counts it, in the PPTX and ODP readers", { timeout: 60_000 }, () => {
+    const target = `https://example.org/${"u".repeat(100_000)}`;
+    const deck = writePptx({ width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame, paragraphs: [[{ type: "text", text: "a", href: "https://example.org/x" }]] }] }] }).bytes;
+    const run = `<a:r><a:rPr lang="en-US"><a:hlinkClick r:id="rId3"/></a:rPr><a:t>a</a:t></a:r><a:r><a:rPr lang="en-US"/><a:t>b</a:t></a:r>`;
+    const pptx = (runs: number) =>
+      patch(patch(deck, "ppt/slides/_rels/slide1.xml.rels", (x) => x.replace(/Target="https:\/\/example\.org\/x"/, `Target="${target}"`)), "ppt/slides/slide1.xml", (x) => x.replace(/(<a:p>).*(<\/a:p>)/, `$1${run.repeat(runs)}$2`));
+    expect(readPptx(pptx(25)).model.slides).toHaveLength(1);
+    expect(() => readPptx(pptx(200))).toThrow(/characters of run text and link targets/);
+    const odp = writeOdp({ width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame, paragraphs: [[{ type: "text", text: "a" }]] }] }] }).bytes;
+    // One link around many spans of two styles: each leaf carries the same target, and unlike marks stop the runs from merging.
+    const bold = `<style:style style:name="B" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>`;
+    const runs = (n: number) =>
+      patch(odp, "content.xml", (x) =>
+        x.replace("</office:automatic-styles>", `${bold}</office:automatic-styles>`).replace(/<text:p text:style-name="Pdeck">.*?<\/text:p>/, `<text:p text:style-name="Pdeck"><text:a xlink:href="${target}">${'<text:span text:style-name="B">a</text:span>b'.repeat(n)}</text:a></text:p>`),
+      );
+    expect(readOdp(runs(25)).model.slides).toHaveLength(1);
+    expect(() => readOdp(runs(200))).toThrow(/characters of run text and link targets/);
   });
 
   test("11 an ODP line outside the bounds, and a deck of too many slides, are not read", () => {
@@ -302,7 +321,7 @@ describe("slow files", () => {
   test("11 text:s runs count against the text cap, and nested spans keep seven marks at most", () => {
     const odp = writeOdp({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
     const spaces = (n: number) => patch(odp, "content.xml", (x) => x.replace(">x</text:p>", `>a${'<text:s text:c="1000"/>'.repeat(n)}b</text:p>`));
-    expect(() => readOdp(spaces(11), { maxTextChars: 10_000 })).toThrow(/spaces in <text:s> elements/);
+    expect(() => readOdp(spaces(11), { maxTextChars: 10_000 })).toThrow(/spaces in <text:s> elements|characters of run text/);
     expect(readOdp(spaces(9), { maxTextChars: 10_000 }).warnings).toEqual([]);
     const props = `<style:text-properties fo:font-weight="bold" fo:font-style="italic" style:text-underline-style="solid" style:text-line-through-style="solid" fo:font-family="monospace" style:text-position="super 58%"/>`;
     const styles = Array.from({ length: 50 }, (_, i) => `<style:style style:name="m${i}" style:family="text"${i ? ` style:parent-style-name="m${i - 1}"` : ""}>${props}</style:style>`).join("");

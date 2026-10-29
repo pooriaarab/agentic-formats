@@ -266,6 +266,7 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   /** Slide and notes parts read so far. A part that two entries name would be read and copied twice. */
   const readParts = new Set<string>();
   // An image part is shared by every picture that names it, so each picture counts its bytes.
+  const chargeRuns = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} characters of run text and link targets`);
   const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
   const slides: Slide[] = [];
   const slideEntries = elementsOf(childOf(presentation, "p:sldIdLst"));
@@ -311,7 +312,10 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
         const text = textOf(childOf(r, "a:t"));
         // A viewer underlines a link by itself, so a link run carries no underline mark.
         const shown = MARKS.filter((m) => marks.includes(m) && !(href && m === "underline"));
-        return text ? [{ type: "text", text, ...(shown.length ? { marks: shown } : {}), ...(href ? { href } : {}) }] : [];
+        if (!text) return [];
+        // A link target is one string, but each run that carries it counts it.
+        chargeRuns(text.length + (href?.length ?? 0));
+        return [{ type: "text", text, ...(shown.length ? { marks: shown } : {}), ...(href ? { href } : {}) }];
       });
       return normalizeInline(inlines) as TextRun[];
     };
