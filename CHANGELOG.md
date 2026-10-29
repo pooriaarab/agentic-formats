@@ -2,8 +2,8 @@
 
 ## 0.4.1
 
-- The README says a command-line error exits 2. That covers an unknown command, and an unknown flag or argument to `convert` or `inspect`. Every other error exits 1, such as a missing file, an unknown extension, or an output that exists. 0.4.0 said every error exits 1.
-- The README names `ODT_MIME`, `ODS_MIME`, and `ODP_MIME`, the media types of the ODF formats. The code does not change.
+- The README and `--help` say a command-line error exits 2. That covers an unknown command, and an unknown flag or argument to `convert` or `inspect`. Every other error exits 1, such as a missing file, an unknown extension, or an output that exists. 0.4.0 said every error exits 1. Only the text changes; the exit codes do not.
+- The README names `ODT_MIME`, `ODS_MIME`, and `ODP_MIME`, the media types of the ODF formats.
 
 ## 0.4.0
 

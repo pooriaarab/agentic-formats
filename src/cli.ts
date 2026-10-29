@@ -18,7 +18,8 @@ Commands:
 
 Formats: ${FORMATS.join(", ")}. A file converts to a format of its own kind:
 documents (odt, docx), spreadsheets (ods, xlsx), slide decks (odp, pptx).
-Output is JSON on stdout. Errors go to stderr and the exit code is 1.
+Output is JSON on stdout. Errors go to stderr. An unknown command, or an unknown flag or argument
+to convert or inspect, exits 2. Other errors exit 1.
 
 Environment (mcp only):
   AGENTIC_FORMATS_ROOT             Limit every path to this folder instead of the working folder.
