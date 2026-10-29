@@ -23,6 +23,15 @@ export type Mark = "bold" | "italic" | "underline" | "strike" | "code" | "supers
 /** Refuse a run whose text or link is not a string: a size taken from the wrong type would pass every count. */
 export function checkRun(run: TextRun): void {
   if (typeof run?.text !== "string" || (run.href !== undefined && typeof run.href !== "string")) throw new FormatError("INVALID_MODEL", "a text run needs text and a link that are strings");
+  if (run.marks !== undefined && !Array.isArray(run.marks)) throw new FormatError("INVALID_MODEL", "the marks of a text run must be a list");
+}
+
+/** Refuse a model value that is not a list, or not an object, before a writer reads into it. */
+export function checkList(value: unknown, what: string): void {
+  if (!Array.isArray(value)) throw new FormatError("INVALID_MODEL", `${what} must be a list`);
+}
+export function checkObject(value: unknown, what: string): void {
+  if (typeof value !== "object" || value === null) throw new FormatError("INVALID_MODEL", `${what} must be an object`);
 }
 
 export const MARKS: readonly Mark[] = ["bold", "italic", "underline", "strike", "code", "superscript", "subscript"];

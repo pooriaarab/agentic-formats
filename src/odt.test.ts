@@ -347,6 +347,57 @@ describe("hostile files", () => {
     expect(writeOdt({ blocks: [{ type: "list", ordered: false, items: [{ content: [], sublist: { type: "list", ordered: false, items: [{ content: [text("x")] }] } }] }] }).bytes.length).toBeGreaterThan(0);
   });
 
+  test("16 a footnote that holds a footnote, an image, or itself is refused, not followed", () => {
+    const cyclic = { type: "footnote" as const, content: [] as unknown[] };
+    cyclic.content.push(cyclic);
+    const nested = { type: "footnote" as const, content: [{ type: "footnote", content: [text("x")] }] };
+    const withImage = { type: "footnote" as const, content: [{ type: "image", data: new Uint8Array(30), mime: "image/png" }] };
+    for (const note of [cyclic, nested, withImage]) {
+      expect(() => writeOdt({ blocks: [{ type: "paragraph", content: [note as never] }] })).toThrow(/a footnote holds only text and line breaks/);
+    }
+    let deep: unknown = { type: "footnote", content: [text("x")] };
+    for (let i = 0; i < 20_000; i++) deep = { type: "footnote", content: [deep] };
+    expect(() => writeOdt({ blocks: [{ type: "paragraph", content: [deep as never] }] })).toThrow(FormatError);
+  });
+
+  test("16 a model of the wrong shape is an INVALID_MODEL error, not a TypeError", () => {
+    const wrong = (blocks: unknown) => ({ blocks }) as unknown as TextDoc;
+    const para = (content: unknown) => wrong([{ type: "paragraph", content }]);
+    for (const doc of [
+      wrong([null]),
+      wrong([{ type: "paragraph" }]),
+      para("x"),
+      para([{ type: "text", text: "x", marks: 5 }]),
+      para([{ type: "image", data: "abc", mime: "image/png" }]),
+      para([{ type: "image", data: null, mime: "image/png" }]),
+      para([{ type: "image", data: new Uint8Array(30), mime: "image/png", alt: 5 }]),
+      wrong([{ type: "list", ordered: false }]),
+      wrong([{ type: "list", ordered: false, items: [null] }]),
+      wrong([{ type: "table", rows: [[["x"]]] }]),
+      wrong([{ type: "table", rows: [5] }]),
+      wrong([{ type: "table" }]),
+    ]) {
+      expect(() => writeOdt(doc), JSON.stringify(doc)).toThrow(FormatError);
+    }
+  });
+
+  test("16 the writer's depth cap keeps its output inside the reader's depth cap", () => {
+    let deep: Block = { type: "paragraph", content: [text("x")] };
+    for (let i = 0; i < 33; i++) deep = { type: "list", ordered: false, items: [{ content: [], sublist: { type: "list", ordered: false, items: [{ content: [text("x")] }] } }] };
+    let table: Block = { type: "paragraph", content: [text("x")] };
+    for (let i = 0; i < 32; i++) table = { type: "table", rows: [[[table]]] };
+    for (const doc of [{ blocks: [deep] }, { blocks: [table] }]) expect(readOdt(writeOdt(doc).bytes).model.blocks.length).toBeGreaterThan(0);
+    let tooDeep: Block = { type: "paragraph", content: [text("x")] };
+    for (let i = 0; i < 40; i++) tooDeep = { type: "table", rows: [[[tooDeep]]] };
+    limitExceeded(() => writeOdt({ blocks: [tooDeep] }));
+  });
+
+  test("16 an image description counts against the text cap, and a long one is refused before it is escaped", () => {
+    const image = { type: "image" as const, data: PNG, mime: "image/png" as const, alt: '"'.repeat(30_000) };
+    limitExceeded(() => writeOdt({ blocks: [{ type: "paragraph", content: Array.from({ length: 10 }, () => image) }] }, withLimits({ maxTotalBytes: 1_000_000 })));
+    limitExceeded(() => writeOdt({ blocks: [{ type: "paragraph", content: Array.from({ length: 10 }, () => image) }] }, withLimits({ maxTextChars: 200_000 })));
+  });
+
   test("16 one run of eight million newlines is refused before its XML is made", () => {
     const started = Date.now();
     limitExceeded(() => writeOdt({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "\n".repeat(8_000_000) }] }] }));

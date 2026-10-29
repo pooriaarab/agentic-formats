@@ -3,6 +3,8 @@ import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import {
   MARKS,
   normalizeInline,
+  checkList,
+  checkObject,
   checkRun,
   mergeMarks,
   normalizeTextDoc,
@@ -75,6 +77,11 @@ interface Out {
 }
 
 function imageXml(node: InlineImage, out: Out): string {
+  if (!(node.data instanceof Uint8Array)) throw new FormatError("INVALID_MODEL", "image data must be a Uint8Array");
+  if (node.alt !== undefined && typeof node.alt !== "string") throw new FormatError("INVALID_MODEL", "the description of an image must be a string");
+  // The description is written once for each use, and escaping grows it up to six times.
+  out.charge(node.alt?.length ?? 0);
+  out.bytes(6 * (node.alt?.length ?? 0));
   const sniffed = sniffImage(node.data);
   if (!sniffed) {
     out.warnings.add("an image is not a PNG, JPEG, or GIF: not written");
@@ -109,6 +116,7 @@ function runXml(run: TextRun, out: Out): string {
 }
 
 function inlineXml(nodes: Inline[], out: Out): string {
+  checkList(nodes, "the content of a block");
   return nodes
     .map((node) => {
       const xml = ((): string => {
@@ -121,6 +129,10 @@ function inlineXml(nodes: Inline[], out: Out): string {
           case "image":
             return imageXml(node, out);
           case "footnote": {
+            // A note holds text and line breaks only. A note inside a note would recurse with no bound, and a cyclic one forever.
+            if (!Array.isArray(node.content) || node.content.some((inner) => typeof inner !== "object" || inner === null || (inner.type !== "text" && inner.type !== "break"))) {
+              throw new FormatError("INVALID_MODEL", "a footnote holds only text and line breaks");
+            }
             const n = ++out.notes;
             return `<text:note text:id="ftn${n}" text:note-class="footnote"><text:note-citation>${n}</text:note-citation><text:note-body><text:p text:style-name="Footnote">${inlineXml(node.content, out)}</text:p></text:note-body></text:note>`;
           }
@@ -151,7 +163,9 @@ function listXml(list: List, out: Out): string {
 }
 
 function listXmlOf(list: List, out: Out): string {
+  checkList(list.items, "the items of a list");
   const items = list.items.map((item) => {
+    checkObject(item, "an item of a list");
     const xml = `<text:list-item><text:p text:style-name="Standard">${inlineXml(item.content, out)}</text:p>${item.sublist ? listXml(item.sublist, out) : ""}</text:list-item>`;
     out.bytes(xml.length);
     return xml;
@@ -164,6 +178,11 @@ function tableXml(table: Table, out: Out): string {
 }
 
 function tableXmlOf(table: Table, out: Out): string {
+  checkList(table.rows, "the rows of a table");
+  for (const row of table.rows) {
+    checkList(row, "a row of a table");
+    for (const cell of row) checkList(cell, "a cell of a table");
+  }
   const columns = table.rows.reduce((n, r) => Math.max(n, r.length), 0);
   const row = (cells: Block[][]) =>
     `<table:table-row>${Array.from({ length: columns }, (_, i) => {
@@ -184,6 +203,7 @@ function blockXml(block: Block, out: Out): string {
 }
 
 function blockXmlOf(block: Block, out: Out): string {
+  checkObject(block, "a block");
   switch (block.type) {
     case "paragraph":
       return `<text:p text:style-name="Standard">${inlineXml(block.content, out)}</text:p>`;
@@ -209,7 +229,8 @@ export function writeOdt(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
     tables: 0,
     notes: 0,
     depth: 0,
-    maxDepth: caps.maxXmlDepth,
+    // A list level adds two XML elements and a table three, so this keeps what the writer makes inside the depth cap of the reader.
+    maxDepth: Math.floor(caps.maxXmlDepth / 3),
     warnings: new Set(),
     charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`),
     bytes: capped(caps.maxTotalBytes, `the document passes ${caps.maxTotalBytes} bytes while it is written`),
@@ -355,7 +376,7 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
           const paragraphs = elementsOf(childOf(c, "text:note-body")).filter((p) => p.name === "text:p" || p.name === "text:h");
           const body = paragraphs.flatMap((p, i): Inline[] => [...(i ? [{ type: "break" } as const] : []), ...finish(inline(p, paragraphMarks(p.attrs["text:style-name"])))]);
           const note: Footnote = { type: "footnote", content: body.filter((n): n is TextRun | { type: "break" } => n.type === "text" || n.type === "break") };
-          if (note.content.length !== body.length) warnings.add("an image in a footnote: not imported");
+          if (note.content.length !== body.length) warnings.add("an image or a note in a footnote: not imported");
           return [note];
         }
         case "office:annotation":
