@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, realpathSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { FormatError, withLimits, type Limits } from "./limits.js";
 
@@ -9,6 +9,15 @@ export class UsageError extends Error {
     this.name = "UsageError";
   }
 }
+
+const exists = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /** Which paths a tool may touch: one folder and everything under it, or any path the process can reach. */
 export type PathPolicy = { folder: string } | { anyPath: true };
@@ -41,10 +50,12 @@ export function resolvePath(path: string, policy: PathPolicy): string {
   const absolute = resolve(folder, path);
   let existing = absolute;
   const rest: string[] = [];
-  while (!existsSync(existing) && dirname(existing) !== existing) {
+  // lstat sees a link whose target is missing; existsSync does not, and a write would follow that link out of the folder.
+  while (!exists(existing) && dirname(existing) !== existing) {
     rest.unshift(basename(existing));
     existing = dirname(existing);
   }
+  if (exists(existing) && !existsSync(existing)) throw new UsageError(`"${path}" goes through a link that points nowhere`);
   const real = join(realpathSync(existing), ...rest);
   const realRoot = realpathSync(folder);
   // A root such as `/` already ends in the separator.
@@ -74,14 +85,27 @@ export function readInput(path: string, limits?: Partial<Limits>): Uint8Array {
   }
 }
 
-/** Write a file. It refuses to replace one unless `overwrite` is true, and never replaces the input. */
+/**
+ * Write a file. It refuses to replace one unless `overwrite` is true, never replaces the input, never
+ * follows a link at the output, and never rewrites a file that has more than one name.
+ */
 export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean, input?: string): void {
   if (input !== undefined && existsSync(path) && realpathSync(path) === realpathSync(input)) throw new UsageError("the output is the input file");
+  let fd: number;
   try {
-    writeFileSync(path, bytes, { flag: overwrite ? "w" : "wx" });
+    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (overwrite ? 0 : constants.O_EXCL), 0o666);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`"${path}" exists; pass --force to replace it`);
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") throw new UsageError(`"${path}" exists; pass --force to replace it`);
+    if (code === "ELOOP") throw new UsageError(`"${path}" is a link; the output must be a plain file`);
     throw error;
+  }
+  try {
+    if (fstatSync(fd).nlink > 1) throw new UsageError(`"${path}" has more than one name (a hard link); it is not replaced`);
+    ftruncateSync(fd, 0);
+    for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
+  } finally {
+    closeSync(fd);
   }
 }
 

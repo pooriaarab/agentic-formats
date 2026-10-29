@@ -21,7 +21,8 @@
  *  8 LibreOffice cannot open a file the CLI wrote
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -247,12 +248,66 @@ describe("mcp over stdio", () => {
       for (const path of ["../outside/secret.odt", join(outside, "secret.odt"), "escape/secret.odt", "/etc/passwd.odt"]) {
         const r = await call(client, "inspect_file", { path });
         expect(r.isError, path).toBe(true);
-        expect(JSON.stringify(r.body), path).toMatch(/outside the allowed folder|file not found/);
+        expect(JSON.stringify(r.body), path).toMatch(/outside the allowed folder/);
       }
       for (const output of ["../outside/o.docx", "escape/o.docx", join(outside, "o.docx")]) {
         expect((await call(client, "convert_file", { input: "in.odt", output })).isError, output).toBe(true);
         expect(existsSync(join(outside, "o.docx"))).toBe(false);
       }
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("mcp output links", () => {
+  const connect = async (root: string) => {
+    const client = new Client({ name: "probe", version: "0.0.0" });
+    await client.connect(new StdioClientTransport({ command: "node", args: [cli, "mcp"], cwd: dir, env: serverEnv({ AGENTIC_FORMATS_ROOT: root }) }));
+    return client;
+  };
+  const call = async (client: Client, name: string, args: Record<string, unknown>) => {
+    const result = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
+    return { isError: !!result.isError, text: result.content[0].text };
+  };
+
+  test("9 a link inside the folder that points nowhere, or at a file outside, never lets a write out", { timeout: 60_000 }, async () => {
+    const root = at("links-root");
+    const outside = at("links-outside");
+    mkdirSync(root, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(root, "in.odt"), readFileSync(at("doc.odt")));
+    writeFileSync(join(outside, "victim.docx"), "original");
+    symlinkSync(join(outside, "new.docx"), join(root, "dangling.docx"));
+    symlinkSync(join(outside, "victim.docx"), join(root, "live.docx"));
+    linkSync(join(outside, "victim.docx"), join(root, "hard.docx"));
+    const client = await connect(root);
+    try {
+      for (const output of ["dangling.docx", "live.docx", "hard.docx"]) {
+        for (const overwrite of [true, false]) {
+          expect((await call(client, "convert_file", { input: "in.odt", output, overwrite })).isError, `${output} ${overwrite}`).toBe(true);
+        }
+      }
+      expect(existsSync(join(outside, "new.docx"))).toBe(false);
+      expect(readFileSync(join(outside, "victim.docx"), "utf8")).toBe("original");
+      const dangling = await call(client, "convert_file", { input: "in.odt", output: "dangling.docx", overwrite: true });
+      expect(dangling.text).toMatch(/points nowhere/);
+      expect((await call(client, "convert_file", { input: "in.odt", output: "fresh.docx" })).isError).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("9 read_model refuses a model past the reply cap and says where the counts are", { timeout: 120_000 }, async () => {
+    const root = at("big-root");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "big.ods"), writeOds({ sheets: [{ name: "S", cells: { A1: { value: randomBytes(7_000_000).toString("base64") } } }] }).bytes);
+    const client = await connect(root);
+    try {
+      const read = await call(client, "read_model", { path: "big.ods" });
+      expect(read.isError).toBe(true);
+      expect(read.text).toMatch(/larger than 8388608 characters as JSON; use inspect_file/);
+      expect(await call(client, "inspect_file", { path: "big.ods" })).toMatchObject({ isError: false });
     } finally {
       await client.close();
     }

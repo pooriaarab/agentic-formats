@@ -118,5 +118,18 @@ export function inspect(bytes: Uint8Array, format: Format, limits?: Partial<Limi
   return { ...base, ...(loaded.model.title ? { title: loaded.model.title } : {}), blocks, characters, ...counts };
 }
 
-/** The model as JSON for an agent to read. Image bytes become their size. */
-export const modelJson = (model: unknown): string => JSON.stringify(model, (_key, value: unknown) => (value instanceof Uint8Array ? { bytes: value.length } : value));
+/** The longest model, in characters of JSON, that a tool hands to an agent. */
+export const MAX_MODEL_JSON = 8 * 1024 * 1024;
+
+/**
+ * The model as JSON for an agent to read. Image bytes become their size. A model past `max`
+ * characters is refused while it is written, before the whole text exists.
+ */
+export function modelJson(model: unknown, max = MAX_MODEL_JSON): string {
+  let size = 0;
+  return JSON.stringify(model, (key, value: unknown) => {
+    size += key.length + (typeof value === "string" ? value.length + 2 : 8);
+    if (size > max) throw new FormatError("LIMIT_EXCEEDED", `the model is larger than ${max} characters as JSON; use inspect_file for counts`);
+    return value instanceof Uint8Array ? { bytes: value.length } : value;
+  });
+}
