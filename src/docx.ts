@@ -136,6 +136,8 @@ function inlineXml(nodes: Inline[], out: Out): string {
             out.notes.push(note);
             return `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="${id}"/></w:r>`;
           }
+          default:
+            throw new FormatError("INVALID_MODEL", `"${(node as { type?: unknown }).type}" is not a kind of inline content`);
         }
       })();
       out.bytes(xml.length);
@@ -144,10 +146,16 @@ function inlineXml(nodes: Inline[], out: Out): string {
     .join("");
 }
 
+/** One list instance in numbering.xml. Each instance restarts its numbering at every level. */
+const numXml = (id: number, ordered: boolean): string =>
+  `<w:num w:numId="${id}"><w:abstractNumId w:val="${ordered ? 1 : 0}"/>${Array.from({ length: 9 }, (_, l) => `<w:lvlOverride w:ilvl="${l}"><w:startOverride w:val="1"/></w:lvlOverride>`).join("")}</w:num>`;
+
 function listXml(list: List, depth: number, out: Out): string {
   if (depth > 8) out.warnings.add("a list nests deeper than nine levels: the deepest levels were flattened");
   const level = Math.min(depth, 8);
   const numId = out.nums.push(list.ordered);
+  // Every list adds an entry to numbering.xml, even an empty one.
+  out.bytes(numXml(numId, list.ordered).length);
   return list.items
     .map((item) => {
       const xml =
@@ -160,7 +168,7 @@ function listXml(list: List, depth: number, out: Out): string {
 }
 
 function tableXml(table: Table, out: Out): string {
-  const columns = Math.max(1, ...table.rows.map((r) => r.length));
+  const columns = table.rows.reduce((n, r) => Math.max(n, r.length), 1);
   const width = Math.floor(9000 / columns);
   const row = (cells: Block[][], header: boolean) =>
     `<w:tr>${header ? "<w:trPr><w:tblHeader/></w:trPr>" : ""}${Array.from({ length: columns }, (_, i) => {
@@ -194,6 +202,8 @@ function blockXmlOf(block: Block, out: Out, depth: number): string {
       return listXml(block, depth, out);
     case "table":
       return tableXml(block, out);
+    default:
+      throw new FormatError("INVALID_MODEL", `"${(block as { type?: unknown }).type}" is not a kind of block`);
   }
 }
 
@@ -215,7 +225,7 @@ export function writeDocx(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
   const numbering =
     `${XML_HEADER}<w:numbering xmlns:w="${W}">${abstractNum(0, false)}${abstractNum(1, true)}` +
     out.nums
-      .map((ordered, i) => `<w:num w:numId="${i + 1}"><w:abstractNumId w:val="${ordered ? 1 : 0}"/>${Array.from({ length: 9 }, (_, l) => `<w:lvlOverride w:ilvl="${l}"><w:startOverride w:val="1"/></w:lvlOverride>`).join("")}</w:num>`)
+      .map((ordered, i) => numXml(i + 1, ordered))
       .join("") +
     `</w:numbering>`;
   const separators = '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>';
@@ -425,10 +435,11 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
     const out: Block[] = [];
     const stack: { list: List; level: number; numId: string }[] = [];
     const item = (p: XmlElement, numId: string, ilvl: string): void => {
-      const asked = Number(ilvl) || 0;
-      const level = Math.min(8, Math.max(0, Math.trunc(asked)));
-      if (level !== asked) warnings.add("a list level outside 0 to 8 was moved into that range");
-      const ordered = isOrdered(numId, ilvl);
+      // A level is one digit from 0 to 8. Anything else reads as level 0, with a warning.
+      const valid = /^[0-8]$/.test(ilvl);
+      if (!valid) warnings.add("a list level that is not 0 to 8 was read as level 0");
+      const level = valid ? Number(ilvl) : 0;
+      const ordered = isOrdered(numId, String(level));
       while (stack.length && stack[stack.length - 1].level > level) stack.pop();
       let top = stack[stack.length - 1];
       if (top && level === 0 && top.numId !== numId && restarts.get(numId)?.has("0")) top = undefined as never;
@@ -464,8 +475,9 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
           const header = !!childOf(childOf(rows[0], "w:trPr"), "w:tblHeader");
           out.push({ type: "table", ...(header ? { header: true } : {}), rows: rows.map((r) => elementsOf(r).filter((c) => c.name === "w:tc").map((c) => blocksOf(c))) });
         }
-      } else if (el.name === "w:sdt") out.push(...blocksOf(childOf(el, "w:sdtContent") ?? el));
-      else if (el.name === "w:sdtContent") out.push(...blocksOf(el));
+      } else if (el.name === "w:sdt" || el.name === "w:sdtContent") {
+        for (const inner of blocksOf(el.name === "w:sdt" ? (childOf(el, "w:sdtContent") ?? el) : el)) out.push(inner);
+      }
     }
     return out;
   }

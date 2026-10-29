@@ -266,11 +266,33 @@ describe("a writer that gets one object in many places", () => {
     expect(() => readDocx(many, { maxTotalBytes: 40_000 })).toThrow(/images in the file add up to more than 40000 bytes/);
   });
 
-  test("10 a list level outside 0 to 8 is moved into range, with a warning", () => {
+  test("10 a list level that is not one digit from 0 to 8 reads as level 0, with a warning", () => {
     const base = writeDocx({ blocks: [{ type: "list", ordered: false, items: [{ content: [text("a")] }] }] }).bytes;
-    const read = readDocx(patch(base, "word/document.xml", (x) => x.replace('<w:ilvl w:val="0"/>', '<w:ilvl w:val="1e9"/>')));
-    expect(read.model.blocks).toHaveLength(1);
-    expect(read.warnings).toEqual(["a list level outside 0 to 8 was moved into that range"]);
+    for (const level of ["1e9", "-5", "abc", "01", " 1", "0x1", "9"]) {
+      const read = readDocx(patch(base, "word/document.xml", (x) => x.replace('<w:ilvl w:val="0"/>', `<w:ilvl w:val="${level}"/>`)));
+      expect(read.model.blocks, level).toHaveLength(1);
+      expect(read.warnings, level).toEqual(["a list level that is not 0 to 8 was read as level 0"]);
+    }
+  });
+
+  test("10 empty lists charge the numbering they add", () => {
+    const empty = { type: "list" as const, ordered: false, items: [] };
+    overCap({ blocks: Array.from({ length: 100_000 }, () => empty) }, { maxTotalBytes: 1_000_000 });
+  });
+
+  test("10 a model node of an unknown kind is an INVALID_MODEL error, not a TypeError", () => {
+    for (const doc of [{ blocks: [{ type: "foo" }] }, { blocks: [{ type: "paragraph", content: [{ type: "bar" }] }] }]) {
+      expect(() => writeDocx(doc as unknown as TextDoc)).toThrow(/is not a kind of/);
+    }
+  });
+
+  test("10 a body, a content control, and a table with 200,000 blocks or rows fail or pass as a FormatError, never a stack overflow", { timeout: 60_000 }, () => {
+    const base = writeDocx({ blocks: [para("x")] }).bytes;
+    const paragraphs = Array.from({ length: 200_000 }, (_, i) => `<w:p><w:r><w:t>${i}</w:t></w:r></w:p>`).join("");
+    const read = readDocx(patch(base, "word/document.xml", (x) => x.replace("<w:body>", `<w:body><w:sdt><w:sdtContent>${paragraphs}</w:sdtContent></w:sdt>`)));
+    expect(read.model.blocks.length).toBeGreaterThan(200_000);
+    const row = [[para("x")]];
+    expect(writeDocx({ blocks: [{ type: "table", rows: Array.from({ length: 200_000 }, () => row) }] }, { maxTotalBytes: 100_000_000 }).bytes.length).toBeGreaterThan(0);
   });
 });
 

@@ -372,6 +372,16 @@ describe("hostile files", () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 
+  test("15 a list item that wraps hundreds of thousands of items grafts without a stack overflow", { timeout: 60_000 }, () => {
+    const item = (inner: string) => `<text:list-item>${inner}</text:list-item>`;
+    const list = (items: string) => `<text:list>${items}</text:list>`;
+    const first = list(item(`<text:p>a</text:p>${list(item("<text:p>b</text:p>"))}`));
+    const rest = Array.from({ length: 300_000 }, (_, i) => item(`<text:p>${i}</text:p>`)).join("");
+    const second = list(item(list(item(list(item("<text:p>d</text:p>"))) + rest)));
+    const read = readOdt(odt(wrap(first + second)));
+    expect(read.model.blocks.length).toBeGreaterThan(0);
+  });
+
   test("15 a run of newlines is charged as the XML it becomes, before the next piece is made", () => {
     const run = { type: "text" as const, text: "\n".repeat(2_000_000) };
     limitExceeded(() => writeOdt({ blocks: [{ type: "paragraph", content: [run, run, run, run, run, run] }] }, withLimits({ maxTextChars: 20_000_000 })));

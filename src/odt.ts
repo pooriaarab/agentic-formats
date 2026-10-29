@@ -277,7 +277,7 @@ function graft(host: List, wrapper: ListItem): boolean {
   }
   const [first, ...rest] = inner.items;
   if (first && first.content.length === 0 && first.sublist && graft(last.sublist, first)) {
-    last.sublist.items.push(...rest);
+    for (const item of rest) last.sublist.items.push(item);
     return true;
   }
   return false;
