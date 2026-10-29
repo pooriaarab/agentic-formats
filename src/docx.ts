@@ -5,6 +5,8 @@ import {
   checkList,
   checkObject,
   checkRun,
+  headingLevel,
+  kindName,
   normalizeInline,
   normalizeTextDoc,
   type Block,
@@ -179,7 +181,7 @@ function inlineXml(nodes: Inline[], out: Out): string {
             return `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="${id}"/></w:r>`;
           }
           default:
-            throw new FormatError("INVALID_MODEL", `"${(node as { type?: unknown }).type}" is not a kind of inline content`);
+            throw new FormatError("INVALID_MODEL", `${kindName((node as { type?: unknown }).type)} is not a kind of inline content`);
         }
       })();
       // A run charged its own XML already.
@@ -265,7 +267,7 @@ function blockXmlOf(block: Block, out: Out, depth: number): string {
     case "paragraph":
       return `<w:p>${inlineXml(block.content, out)}</w:p>`;
     case "heading": {
-      const level = Math.min(6, Math.max(1, Math.trunc(block.level) || 1));
+      const level = headingLevel(block.level);
       return `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/></w:pPr>${inlineXml(block.content, out)}</w:p>`;
     }
     case "list":
@@ -273,7 +275,7 @@ function blockXmlOf(block: Block, out: Out, depth: number): string {
     case "table":
       return tableXml(block, out);
     default:
-      throw new FormatError("INVALID_MODEL", `"${(block as { type?: unknown }).type}" is not a kind of block`);
+      throw new FormatError("INVALID_MODEL", `${kindName((block as { type?: unknown } | null)?.type)} is not a kind of block`);
   }
 }
 

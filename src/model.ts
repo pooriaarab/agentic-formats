@@ -26,6 +26,15 @@ export function checkRun(run: TextRun): void {
   if (run.marks !== undefined && !Array.isArray(run.marks)) throw new FormatError("INVALID_MODEL", "the marks of a text run must be a list");
 }
 
+/** A model value as an error message may name it: a short string, or its type. A symbol or a huge string never reaches the message. */
+export const kindName = (value: unknown): string => (typeof value === "string" ? JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}...` : value) : `a value of type ${typeof value}`);
+
+/** The level of a heading, from 1 to 6. A number outside the range or with a fraction is brought into it; any other type is refused. */
+export function headingLevel(level: unknown): number {
+  if (typeof level !== "number") throw new FormatError("INVALID_MODEL", "the level of a heading must be a number");
+  return Math.min(6, Math.max(1, Math.trunc(level) || 1));
+}
+
 /** Refuse a model value that is not a list, or not an object, before a writer reads into it. */
 export function checkList(value: unknown, what: string): void {
   if (!Array.isArray(value)) throw new FormatError("INVALID_MODEL", `${what} must be a list`);

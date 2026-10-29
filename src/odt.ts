@@ -6,6 +6,8 @@ import {
   checkList,
   checkObject,
   checkRun,
+  headingLevel,
+  kindName,
   mergeMarks,
   normalizeTextDoc,
   textLength,
@@ -153,7 +155,7 @@ function inlineXml(nodes: Inline[], out: Out): string {
             return `<text:note text:id="ftn${n}" text:note-class="footnote"><text:note-citation>${n}</text:note-citation><text:note-body><text:p text:style-name="Footnote">${inlineXml(node.content, out)}</text:p></text:note-body></text:note>`;
           }
           default:
-            throw new FormatError("INVALID_MODEL", `"${(node as { type?: unknown }).type}" is not a kind of inline content`);
+            throw new FormatError("INVALID_MODEL", `${kindName((node as { type?: unknown }).type)} is not a kind of inline content`);
         }
       })();
       // A run charged its own XML already.
@@ -224,7 +226,7 @@ function blockXmlOf(block: Block, out: Out): string {
     case "paragraph":
       return `<text:p text:style-name="Standard">${inlineXml(block.content, out)}</text:p>`;
     case "heading": {
-      const level = Math.min(6, Math.max(1, Math.trunc(block.level) || 1));
+      const level = headingLevel(block.level);
       return `<text:h text:style-name="Heading_20_${level}" text:outline-level="${level}">${inlineXml(block.content, out)}</text:h>`;
     }
     case "list":
@@ -232,7 +234,7 @@ function blockXmlOf(block: Block, out: Out): string {
     case "table":
       return tableXml(block, out);
     default:
-      throw new FormatError("INVALID_MODEL", `"${(block as { type?: unknown } | null)?.type}" is not a kind of block`);
+      throw new FormatError("INVALID_MODEL", `${kindName((block as { type?: unknown } | null)?.type)} is not a kind of block`);
   }
 }
 
@@ -251,6 +253,7 @@ export function writeOdt(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
     charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`),
     bytes: capped(caps.maxTotalBytes, `the document passes ${caps.maxTotalBytes} bytes while it is written`),
   };
+  checkList(doc?.blocks, "the blocks of a document");
   const body = doc.blocks.map((b) => blockXml(b, out)).join("\n");
   const spanStyles = spanStylesXml(out.spans);
   const content =
