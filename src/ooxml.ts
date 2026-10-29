@@ -52,8 +52,9 @@ export function relsXml(rels: { id: string; type: string; target: string; extern
   );
 }
 
-/** Join a relationship target to the part that holds it. Returns undefined for a path that leaves the package. */
+/** Join a relationship target to the part that holds it. Returns undefined for a path that leaves the package, or one that names no part. */
 export function resolveTarget(source: string, target: string): string | undefined {
+  if (/(^|\/)\.{0,2}$/.test(target)) return undefined;
   const parts = target.startsWith("/") ? [] : source.split("/").slice(0, -1);
   for (const part of target.split("/")) {
     if (part === "..") {
