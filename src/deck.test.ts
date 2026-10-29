@@ -103,6 +103,15 @@ describe.each(formats)("%s: write then read", (format) => {
     expect(() => write(deck, { maxTotalBytes: 6000 })).toThrow(/export is larger/);
   });
 
+  test("10 a model that holds one string many times is refused past the text cap", () => {
+    const run = { type: "text" as const, text: "n".repeat(1000) };
+    const deck = one({ type: "textbox", frame: { x: 0, y: 0, width: 10, height: 10 }, paragraphs: Array.from({ length: 50 }, () => [run]) });
+    expect(() => write(deck, { maxTextChars: 10_000 })).toThrow(/more than 10000 characters of text/);
+    const notes = "n".repeat(1000);
+    expect(() => write({ width: 720, height: 405, slides: Array.from({ length: 50 }, () => ({ shapes: [], notes })) }, { maxTextChars: 10_000 })).toThrow(/characters of text/);
+    expect(() => write(deck)).not.toThrow();
+  });
+
   test("5 every XML part parses with an independent parser", () => {
     const all = files(write(fixture).bytes);
     const xml = Object.keys(all).filter((n) => /\.(xml|rels)$/.test(n));
@@ -144,6 +153,58 @@ describe("pptx package", () => {
     const read = readPptx(slide);
     expect(read.model.slides[0].shapes[0]).toMatchObject({ type: "textbox", frame: { x: 36, y: 18, width: 600, height: 50 } });
     expect(read.warnings).toEqual([]);
+  });
+});
+
+describe("slow files", () => {
+  const frame = { x: 0, y: 0, width: 100, height: 50 };
+  const slideOf = (text: string, notes?: string) => ({ shapes: [{ type: "textbox" as const, frame, paragraphs: [[{ type: "text" as const, text }]] }], ...(notes ? { notes } : {}) });
+
+  test("10 500 slides that share one big layout read fast, and each placeholder takes its place from it", { timeout: 120_000 }, () => {
+    const deck: Deck = { width: 720, height: 405, slides: Array.from({ length: 500 }, (_, i) => slideOf(`slide ${i}`)) };
+    const placeholders = Array.from(
+      { length: 10_000 },
+      (_, i) => `<p:sp><p:nvSpPr><p:cNvPr id="${i + 2}" name="P${i}"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="${i}"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${i * 12700}" y="0"/><a:ext cx="12700" cy="12700"/></a:xfrm></p:spPr></p:sp>`,
+    ).join("");
+    const entries = Object.entries(files(writePptx(deck).bytes)).map(([name, data]) => {
+      if (name === "ppt/slideLayouts/slideLayout1.xml") return { name, data: strFromU8(data).replace("</p:spTree>", `${placeholders}</p:spTree>`) };
+      if (/^ppt\/slides\/slide\d+\.xml$/.test(name)) {
+        return { name, data: strFromU8(data).replace('<p:cNvSpPr txBox="1"/><p:nvPr/>', '<p:cNvSpPr/><p:nvPr><p:ph type="body" idx="9999"/></p:nvPr>').replace(/(<p:spPr>)<a:xfrm>.*?<\/a:xfrm>/, "$1") };
+      }
+      return { name, data };
+    });
+    const started = Date.now();
+    const read = readPptx(writeZip(entries, withLimits()));
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(read.model.slides).toHaveLength(500);
+    expect(read.model.slides[0].shapes[0]).toMatchObject({ frame: { x: 9999, y: 0 } });
+    expect(read.model.slides[499].shapes[0]).toMatchObject({ frame: { x: 9999, y: 0 } });
+    expect(read.warnings).toEqual([]);
+  });
+
+  test("10 a slide part or a notes part that two entries share is read once, and the repeat warns", () => {
+    const base = writePptx({ width: 720, height: 405, slides: [slideOf("one", "notes one"), slideOf("two", "notes two")] }).bytes;
+    const twice = patch(base, "ppt/presentation.xml", (x) => x.replace('<p:sldId id="257" r:id="rId3"/>', '<p:sldId id="257" r:id="rId2"/>'));
+    const slides = readPptx(twice);
+    expect(slides.model.slides).toHaveLength(1);
+    expect(slides.warnings).toEqual(["a slide that is listed twice: not imported"]);
+    const shared = patch(base, "ppt/slides/_rels/slide2.xml.rels", (x) => x.replace("notesSlide2.xml", "notesSlide1.xml"));
+    const notes = readPptx(shared);
+    expect(notes.model.slides.map((s) => s.notes)).toEqual(["notes one", undefined]);
+    expect(notes.warnings).toEqual(["a notes page that two slides share: not imported"]);
+  });
+
+  test("10 an ODP style chain of twenty thousand styles is refused fast, a chain at the cap reads, a loop stops", () => {
+    const odp = writeOdp({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
+    const chain = (length: number) => Array.from({ length }, (_, i) => `<style:style style:name="s${i}" style:family="graphic"${i ? ` style:parent-style-name="s${i - 1}"` : ""}/>`).join("");
+    const rects = (name: string, n: number) => Array.from({ length: n }, () => `<draw:rect draw:style-name="${name}" svg:x="0cm" svg:y="0cm" svg:width="1cm" svg:height="1cm"/>`).join("");
+    const withStyles = (styles: string, shapes: string) => patch(odp, "content.xml", (x) => x.replace("</office:automatic-styles>", `${styles}</office:automatic-styles>`).replace("</draw:page>", `${shapes}</draw:page>`));
+    const started = Date.now();
+    expect(() => readOdp(withStyles(chain(20_000), rects("s19999", 300)))).toThrow(/more than 50 parents/);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(readOdp(withStyles(chain(50), rects("s49", 1))).model.slides[0].shapes).toHaveLength(2);
+    const loop = `<style:style style:name="a" style:family="graphic" style:parent-style-name="b"/><style:style style:name="b" style:family="graphic" style:parent-style-name="a"/>`;
+    expect(readOdp(withStyles(loop, rects("a", 1))).model.slides[0].shapes).toHaveLength(2);
   });
 });
 

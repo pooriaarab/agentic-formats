@@ -199,7 +199,8 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   const height = Number(size?.attrs.cy) / EMU;
   if (!(width > 0 && height > 0)) throw new FormatError("INVALID_FILE", "the PPTX file has no slide size");
 
-  const relTarget = (part: string, kind: string) => [...pkg.rels(part).values()].find((r) => r.kind === kind && !r.external)?.target;
+  const kindTarget = (partRels: ReturnType<typeof pkg.rels>, kind: string) => [...partRels.values()].find((r) => r.kind === kind && !r.external)?.target;
+  const relTarget = (part: string, kind: string) => kindTarget(pkg.rels(part), kind);
   const treeOf = (part: string | undefined) => (part && pkg.files[part] ? childOf(childOf(pkg.parse(part), "p:cSld"), "p:spTree") : undefined);
   const phKey = (sp: XmlElement) => {
     const ph = childOf(childOf(childOf(sp, "p:nvSpPr"), "p:nvPr"), "p:ph");
@@ -211,6 +212,32 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
     return off && ext ? { x: tenth(Number(off.attrs.x) / EMU), y: tenth(Number(off.attrs.y) / EMU), width: tenth(Number(ext.attrs.cx) / EMU), height: tenth(Number(ext.attrs.cy) / EMU) } : undefined;
   };
 
+  /** Where each placeholder of a layout or master sits, by placeholder key; the first one with a position wins. A part is parsed once, however many slides use it. */
+  const placeholderCache = new Map<string, Map<string, Frame>>();
+  const placeholdersOf = (part: string | undefined): Map<string, Frame> => {
+    const cached = part ? placeholderCache.get(part) : undefined;
+    if (cached) return cached;
+    const index = new Map<string, Frame>();
+    for (const sp of elementsOf(treeOf(part))) {
+      const key = sp.name === "p:sp" ? phKey(sp) : undefined;
+      const frame = key === undefined ? undefined : frameFrom(childOf(childOf(sp, "p:spPr"), "a:xfrm"));
+      if (key !== undefined && frame && !index.has(key)) index.set(key, frame);
+    }
+    if (part) placeholderCache.set(part, index);
+    return index;
+  };
+  /** A layout, then its master: the order a placeholder looks for its position. */
+  const parentsCache = new Map<string, Map<string, Frame>[]>();
+  const parentsOf = (layout: string | undefined): Map<string, Frame>[] => {
+    const cached = parentsCache.get(layout ?? "");
+    if (cached) return cached;
+    const parents = [placeholdersOf(layout), placeholdersOf(layout ? relTarget(layout, "slideMaster") : undefined)];
+    parentsCache.set(layout ?? "", parents);
+    return parents;
+  };
+
+  /** Slide and notes parts read so far. A part that two entries name would be read and copied twice. */
+  const readParts = new Set<string>();
   const slides: Slide[] = [];
   for (const entry of elementsOf(childOf(presentation, "p:sldIdLst"))) {
     const slideRel = rels.get(entry.attrs["r:id"] ?? "");
@@ -219,13 +246,16 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
       continue;
     }
     const part = slideRel.target;
+    if (readParts.has(part)) {
+      warn("a slide that is listed twice");
+      continue;
+    }
+    readParts.add(part);
     const slideRels = pkg.rels(part);
-    const layout = relTarget(part, "slideLayout");
-    const parents = [treeOf(layout), treeOf(layout ? relTarget(layout, "slideMaster") : undefined)];
+    const parents = parentsOf(kindTarget(slideRels, "slideLayout"));
     const inherited = (sp: XmlElement): Frame | undefined => {
       const key = phKey(sp);
-      const match = parents.flatMap((t) => elementsOf(t)).find((c) => c.name === "p:sp" && key !== undefined && phKey(c) === key && frameFrom(childOf(childOf(c, "p:spPr"), "a:xfrm")));
-      return frameFrom(childOf(childOf(match, "p:spPr"), "a:xfrm"));
+      return key === undefined ? undefined : parents.map((index) => index.get(key)).find((frame) => frame !== undefined);
     };
 
     const paragraph = (p: XmlElement): TextRun[] => {
@@ -293,9 +323,13 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
         else warnings.add("an image that is not a PNG, JPEG, or GIF: not imported");
       } else if (el.name === "p:grpSp" || el.name === "p:graphicFrame") warn(el.name === "p:grpSp" ? "a group of shapes" : "a table, chart, or diagram");
     }
-    const notesPart = relTarget(part, "notesSlide");
-    const body = elementsOf(treeOf(notesPart)).find((sp) => sp.name === "p:sp" && phKey(sp)?.startsWith("body|"));
-    if (body) notes = paragraphsOf(body).map((runs) => runs.map((r) => r.text).join("")).join("\n");
+    const notesPart = kindTarget(slideRels, "notesSlide");
+    if (notesPart && readParts.has(notesPart)) warn("a notes page that two slides share");
+    else {
+      if (notesPart) readParts.add(notesPart);
+      const body = elementsOf(treeOf(notesPart)).find((sp) => sp.name === "p:sp" && phKey(sp)?.startsWith("body|"));
+      if (body) notes = paragraphsOf(body).map((runs) => runs.map((r) => r.text).join("")).join("\n");
+    }
     slides.push({ shapes, ...(notes ? { notes } : {}) });
   }
   if (!slides.length) throw new FormatError("INVALID_FILE", "the PPTX file has no slide");

@@ -1,4 +1,4 @@
-import { FormatError, type Limits } from "./limits.js";
+import { FormatError, capped, type Limits } from "./limits.js";
 import type { Deck, Frame, TextRun } from "./model.js";
 
 export const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
@@ -19,10 +19,14 @@ export function checkDeck(deck: Deck, limits: Limits): void {
   if (deck.width <= 0 || deck.height <= 0) bad("the deck needs a size above zero");
   if (deck.slides.length === 0) bad("a deck needs at least one slide");
   if (deck.slides.length > limits.maxEntries / 4) bad(`a deck holds at most ${Math.floor(limits.maxEntries / 4)} slides`);
+  // A run or a note that the model holds in many places is written in each place, so each use counts.
+  const chargeText = capped(limits.maxTextChars, `the deck has more than ${limits.maxTextChars} characters of text`);
   deck.slides.forEach((slide, i) => {
+    chargeText(slide.notes?.length ?? 0);
     slide.shapes.forEach((shape, j) => {
       const where = `slide ${i + 1}, shape ${j + 1}`;
       checkFrame(shape.frame, where);
+      if (shape.type === "textbox") for (const runs of shape.paragraphs) for (const run of runs) chargeText(run.text.length);
       if (shape.type === "shape") for (const color of [shape.fill, shape.stroke]) if (color !== undefined && !HEX_COLOR.test(color)) bad(`${where} has a color that is not #rrggbb`);
     });
   });

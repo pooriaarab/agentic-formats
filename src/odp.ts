@@ -1,6 +1,6 @@
 import { checkDeck, tenth } from "./deck.js";
 import { cm, lengthPt, sniffImage } from "./image.js";
-import { FormatError, withLimits, type Limits } from "./limits.js";
+import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { normalizeInline, type Deck, type Frame, type Inline, type Mark, type ReadResult, type Slide, type SlideShape, type TextRun, type WriteResult } from "./model.js";
 import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, writeOdfPackage, type OdfImage } from "./odf.js";
 import { marksOfProps, runXml, spanStylesXml } from "./odt.js";
@@ -16,6 +16,7 @@ interface Out {
   spans: Map<string, string>;
   shapeStyles: Map<string, string>;
   warnings: Set<string>;
+  charge: (chars: number) => void;
 }
 
 const at = (f: Frame) => `svg:x="${cm(f.x)}" svg:y="${cm(f.y)}" svg:width="${cm(f.width)}" svg:height="${cm(f.height)}"`;
@@ -56,7 +57,7 @@ function shapeXml(shape: SlideShape, out: Out): string {
 export function writeOdp(deck: Deck, limits?: Partial<Limits>): WriteResult {
   const caps = withLimits(limits);
   checkDeck(deck, caps);
-  const out: Out = { images: [], spans: new Map(), shapeStyles: new Map(), warnings: new Set() };
+  const out: Out = { images: [], spans: new Map(), shapeStyles: new Map(), warnings: new Set(), charge: capped(caps.maxTextChars, `the deck has more than ${caps.maxTextChars} characters of text`) };
   const pages = deck.slides.map((slide, i) => {
     const notes = slide.notes
       ? `<presentation:notes draw:style-name="dp1"><draw:page-thumbnail draw:layer="layout" draw:page-number="${i + 1}" presentation:class="page" ${at({ x: 0, y: 0, width: deck.width, height: deck.height })}/>` +
@@ -107,9 +108,15 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   };
   collect(content, false);
   if (stylesPart) collect(stylesPart, false);
+  /** A style and its parents, nearest first. A loop ends the walk; a chain past `maxStyleDepth` rejects the file. */
   const chain = (name?: string): string[] => {
     const names: string[] = [];
-    for (let n = name; n && !names.includes(n); n = styles.get(n)?.parent) names.push(n);
+    const seen = new Set<string>();
+    for (let n = name; n && !seen.has(n); n = styles.get(n)?.parent) {
+      if (names.length >= caps.maxStyleDepth) throw new FormatError("LIMIT_EXCEEDED", `a style has more than ${caps.maxStyleDepth} parents`);
+      names.push(n);
+      seen.add(n);
+    }
     return names;
   };
   const prop = (name: string | undefined, key: string): string | undefined => chain(name).map((n) => styles.get(n)?.props[key]).find((v) => v !== undefined);
