@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- `agentic-formats mcp --help` and `-h` print the usage and exit 0. `--version` and `-V` print the version and exit 0. Before, the subcommand started the server, and the flag waited on stdin. An unknown option after `mcp` exits 2, as it does for `agentic-formats-mcp`.
+
 ## 0.4.1
 
 - The README says a command-line error exits 2. That covers an unknown command, and an unknown flag or argument to `convert` or `inspect`. Every other error exits 1, such as a missing file, an unknown extension, or an output that exists. 0.4.0 said every error exits 1.

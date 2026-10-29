@@ -29,6 +29,8 @@ Flags:
   --help, -h       Print this help.
   --version, -V    Print the version.`;
 
+const MCP_FLAGS = ["--help", "-h", "--version", "-V"];
+
 function formatOf(path: string): Format {
   const format = formatOfName(path);
   if (!format) throw new UsageError(`"${path}" has no known extension (${FORMATS.join(", ")})`);
@@ -46,6 +48,19 @@ export async function runCli(argv: string[]): Promise<number> {
     return 0;
   }
   if (first === "mcp") {
+    const unknown = rest.find((a) => !MCP_FLAGS.includes(a));
+    if (unknown !== undefined) {
+      console.error(`Usage error: unknown argument "${unknown}" for mcp.\nRun "agentic-formats --help" for usage.`);
+      return 2;
+    }
+    if (rest.some((a) => a === "--help" || a === "-h")) {
+      console.log(HELP);
+      return 0;
+    }
+    if (rest.some((a) => a === "--version" || a === "-V")) {
+      console.log(VERSION);
+      return 0;
+    }
     try {
       const { startMcpFromEnv } = await import("./mcp.js");
       await startMcpFromEnv();
