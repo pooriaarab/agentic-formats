@@ -1,0 +1,218 @@
+/*
+ * DOCX, end to end: the real writer, the real reader, an independent XML parser, and LibreOffice.
+ * The ways it can fail are written first; each has a case below.
+ *
+ *  1 text is lost or changed: marks, links, runs of spaces, tabs, line breaks, markup characters
+ *  2 structure is lost: headings, nested lists, two lists in a row that merge or keep counting,
+ *    tables with a header and empty cells
+ *  3 an image or a footnote is lost, or an image takes a hostile size
+ *  4 the package is malformed: a part does not parse, a part is missing from the content types,
+ *    a relationship points nowhere
+ *  5 the same model gives different bytes
+ *  6 an unsafe link or a bad image drops without a word; a size limit is missing
+ *  7 a hostile file is read: a DOCTYPE, the wrong type, a remote or external image, a script link,
+ *    XML nested without end, a footnote that is not there, tracked deletions read as text
+ *  8 LibreOffice cannot open our file, or its re-save does not read back to the same model, in the
+ *    same format or after a trip through ODT
+ */
+import { isDeepStrictEqual } from "node:util";
+import { DOMParser } from "@xmldom/xmldom";
+import { strFromU8, unzipSync } from "fflate";
+import { afterAll, describe, expect, test } from "vitest";
+import { readDocx, writeDocx } from "./docx.js";
+import { FormatError, withLimits } from "./limits.js";
+import { normalizeTextDoc, type Block, type List, type TextDoc } from "./model.js";
+import { readOdt, writeOdt } from "./odt.js";
+import { PNG, textFixture as fixture } from "./testing/fixtures.js";
+import { LibreOffice, hasLibreOffice, libreOfficeRequired, sha256, writeArtifact, type RoundTripRecord } from "./testing/libreoffice.js";
+import { readXlsx, writeXlsx } from "./xlsx.js";
+import { writeZip } from "./zip.js";
+
+const text = (t: string) => ({ type: "text" as const, text: t });
+const para = (t: string): Block => ({ type: "paragraph", content: [text(t)] });
+const files = (bytes: Uint8Array) => unzipSync(bytes);
+const patch = (bytes: Uint8Array, name: string, change: (xml: string) => string): Uint8Array =>
+  writeZip(Object.entries(files(bytes)).map(([n, data]) => ({ name: n, data: n === name ? change(strFromU8(data)) : data })), withLimits());
+const wellFormed = (xml: string): void => {
+  const seen: string[] = [];
+  new DOMParser({ onError: (level, message) => seen.push(`${level}: ${message}`) }).parseFromString(xml, "text/xml");
+  expect(seen).toEqual([]);
+};
+
+describe("write then read", () => {
+  const written = writeDocx(fixture);
+
+  test("1-3 the model reads back unchanged, with no warnings", () => {
+    const read = readDocx(written.bytes);
+    expect(read.model).toEqual(normalizeTextDoc(fixture));
+    expect(read.warnings).toEqual([]);
+    expect(written.warnings).toEqual([]);
+  });
+
+  test("2 lists in a row stay apart, and an ordered list restarts at one", () => {
+    const list = (ordered: boolean, ...items: string[]): Block => ({ type: "list", ordered, items: items.map((i) => ({ content: [text(i)] })) });
+    const doc: TextDoc = { blocks: [list(true, "a", "b"), list(true, "c"), list(false, "d"), list(false, "e"), para("between"), list(true, "f")] };
+    expect(readDocx(writeDocx(doc).bytes).model).toEqual(doc);
+    const numbering = strFromU8(files(writeDocx(doc).bytes)["word/numbering.xml"]);
+    expect(numbering.match(/<w:startOverride w:val="1"\/>/g)).toHaveLength(9 * 5);
+  });
+
+  test("2 a list nests across kinds and levels, and a list item may be empty", () => {
+    const doc: TextDoc = {
+      blocks: [
+        {
+          type: "list",
+          ordered: true,
+          items: [
+            { content: [text("one")], sublist: { type: "list", ordered: false, items: [{ content: [text("bullet")], sublist: { type: "list", ordered: true, items: [{ content: [text("deep")] }] } }, { content: [] }] } },
+            { content: [text("two")] },
+          ],
+        },
+      ],
+    };
+    expect(readDocx(writeDocx(doc).bytes).model).toEqual(doc);
+  });
+
+  test("4 every XML part parses with an independent parser", () => {
+    const all = files(written.bytes);
+    const xml = Object.keys(all).filter((n) => /\.(xml|rels)$/.test(n));
+    expect(xml.length).toBeGreaterThanOrEqual(8);
+    for (const name of xml) wellFormed(strFromU8(all[name]));
+  });
+
+  test("4 every part is in the content types, and every internal relationship target exists", () => {
+    const all = files(written.bytes);
+    const types = strFromU8(all["[Content_Types].xml"]);
+    for (const part of Object.keys(all).filter((n) => n.endsWith(".xml") && n !== "[Content_Types].xml")) expect(types).toContain(`PartName="/${part}"`);
+    expect(Object.keys(all)[0]).toBe("[Content_Types].xml");
+    const rels = strFromU8(all["word/_rels/document.xml.rels"]);
+    for (const m of rels.matchAll(/Target="([^"]+)"(?! TargetMode)/g)) expect(all[`word/${m[1]}`]).toBeDefined();
+    expect(rels.match(/TargetMode="External"/g)).toHaveLength(2);
+  });
+
+  test("5 the same model gives the same bytes", () => {
+    expect(writeDocx(fixture).bytes).toEqual(written.bytes);
+  });
+});
+
+describe("write guards", () => {
+  test("3 an image over the entry limit, and an export over the total limit, are refused", () => {
+    const big = new Uint8Array(PNG.length + 4000);
+    big.set(PNG);
+    const doc: TextDoc = { blocks: [{ type: "paragraph", content: [{ type: "image", data: big, mime: "image/png" }] }] };
+    expect(() => writeDocx(doc, { maxEntryBytes: 1000 })).toThrow(FormatError);
+    expect(() => writeDocx(doc, { maxTotalBytes: 6000 })).toThrow(/export is larger/);
+  });
+
+  test("3 a hostile image size is clamped to 22 inches in EMU", () => {
+    const doc: TextDoc = { blocks: [{ type: "paragraph", content: [{ type: "image", data: PNG, mime: "image/png", width: 1e12, height: 5e11 }] }] };
+    const xml = strFromU8(files(writeDocx(doc).bytes)["word/document.xml"]);
+    expect(Number(/<wp:extent cx="(\d+)"/.exec(xml)![1])).toBeLessThanOrEqual(1584 * 12700);
+  });
+
+  test("6 an unsafe link and a bad image are reported", () => {
+    const doc: TextDoc = {
+      blocks: [{ type: "paragraph", content: [{ type: "text", text: "click", href: "javascript:alert(1)" }, { type: "image", data: new TextEncoder().encode("<svg onload=alert(1)/>"), mime: "image/png" }] }],
+    };
+    const { bytes, warnings } = writeDocx(doc);
+    expect(warnings).toEqual(["a link with an unsafe target was written as plain text", "an image is not a PNG, JPEG, or GIF: not written"]);
+    const all = files(bytes);
+    expect(strFromU8(all["word/document.xml"])).toContain("click");
+    expect(strFromU8(all["word/_rels/document.xml.rels"])).not.toMatch(/javascript/);
+    expect(Object.keys(all).some((n) => n.startsWith("word/media"))).toBe(false);
+  });
+});
+
+describe("hostile files", () => {
+  const base = writeDocx({ blocks: [para("x")] }).bytes;
+  const edit = (change: (xml: string) => string, extra?: (bytes: Uint8Array) => Uint8Array) => (extra ?? ((b) => b))(patch(base, "word/document.xml", change));
+
+  test("7 a DOCTYPE with an entity is refused", () => {
+    expect(() => readDocx(edit((x) => x.replace("?>", `?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>`)))).toThrow(/DOCTYPE/);
+  });
+
+  test("7 the wrong type of file is refused", () => {
+    expect(() => readDocx(writeXlsx({ sheets: [{ name: "S", cells: {} }] }).bytes)).toThrow(/not an DOCX/);
+    expect(() => readDocx(writeOdt({ blocks: [] }).bytes)).toThrow(FormatError);
+    expect(() => readDocx(new TextEncoder().encode("PK nope"))).toThrow(FormatError);
+    expect(() => readXlsx(base)).toThrow(FormatError);
+  });
+
+  test("7 a remote image, an external image relationship, and a script link are not followed", () => {
+    const image = (attrs: string) => `<w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip ${attrs}/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+    const link = `<w:hyperlink r:id="rId50"><w:r><w:t>this</w:t></w:r></w:hyperlink>`;
+    const bytes = patch(
+      patch(base, "word/document.xml", (x) => x.replace("</w:p>", `${image('r:link="rId60"')}${image('r:embed="rId61"')}${link}</w:p>`)),
+      "word/_rels/document.xml.rels",
+      (x) =>
+        x.replace(
+          "</Relationships>",
+          `<Relationship Id="rId50" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/><Relationship Id="rId61" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://evil.example/p.png" TargetMode="External"/></Relationships>`,
+        ),
+    );
+    const read = readDocx(bytes);
+    expect(read.model.blocks).toEqual([{ type: "paragraph", content: [text("xthis")] }]);
+    expect(read.warnings.sort()).toEqual(["a link with an unsafe target was read as plain text", "a remote image: not loaded", "an image that is not a PNG, JPEG, or GIF: not imported"]);
+  });
+
+  test("7 an image relationship that leaves the package is not read", () => {
+    const withImage = writeDocx({ blocks: [{ type: "paragraph", content: [{ type: "image", data: PNG, mime: "image/png" }] }] }).bytes;
+    const read = readDocx(patch(withImage, "word/_rels/document.xml.rels", (x) => x.replace("media/image1.png", "../../../etc/passwd")));
+    expect(read.model.blocks).toEqual([{ type: "paragraph", content: [] }]);
+    expect(read.warnings).toEqual(["an image that is not a PNG, JPEG, or GIF: not imported"]);
+  });
+
+  test("7 tables nested past the XML depth cap are refused", () => {
+    const deep = "<w:tbl><w:tr><w:tc>".repeat(60) + "<w:p/>" + "</w:tc></w:tr></w:tbl>".repeat(60);
+    expect(() => readDocx(edit((x) => x.replace("</w:p>", `</w:p>${deep}`)))).toThrow(/nests deeper/);
+  });
+
+  test("7 a missing footnote warns, tracked insertions read, tracked deletions are skipped", () => {
+    const read = readDocx(
+      edit((x) => x.replace("</w:p>", `<w:r><w:footnoteReference w:id="9"/></w:r><w:ins><w:r><w:t> new</w:t></w:r></w:ins><w:del><w:r><w:delText> gone</w:delText></w:r></w:del></w:p>`)),
+    );
+    expect(read.model.blocks).toEqual([{ type: "paragraph", content: [text("x new")] }]);
+    expect(read.warnings.sort()).toEqual(["a footnote that is missing: not imported", "tracked deletions: skipped"]);
+  });
+});
+
+describe.skipIf(!hasLibreOffice && !libreOfficeRequired)("LibreOffice round trip", () => {
+  const lo = hasLibreOffice ? new LibreOffice() : undefined;
+  const records: RoundTripRecord[] = [];
+  afterAll(() => {
+    lo?.dispose();
+    writeArtifact("docx-roundtrip", records);
+  });
+
+  test("8 LibreOffice opens our file, prints it, and its re-save reads back to the same model", { timeout: 300_000 }, () => {
+    expect(hasLibreOffice).toBe(true);
+    const { bytes } = writeDocx(fixture);
+    const pdf = lo!.convert(bytes, "docx", "pdf");
+    expect(strFromU8(pdf.subarray(0, 5))).toBe("%PDF-");
+    const plain = strFromU8(lo!.convert(bytes, "docx", "txt:Text"));
+    for (const word of ["Plan", "Details", "two-b", "deep", "Apples", "paragraphs", "ends.", "Claim", "holds."]) expect(plain).toContain(word);
+    const resaved = lo!.convert(bytes, "docx", "docx");
+    const back = readDocx(resaved);
+    records.push({ format: "docx", case: "fixture", written: sha256(bytes), resaved: sha256(resaved), pdfBytes: pdf.length, equal: isDeepStrictEqual(back.model, normalizeTextDoc(fixture)) });
+    expect(back.model).toEqual(normalizeTextDoc(fixture));
+  });
+
+  /** LibreOffice keeps no nested list of another kind when it saves DOCX: the sublist takes the kind of its parent. */
+  const likeParent = (list: List, ordered = list.ordered): List => ({ ...list, ordered, items: list.items.map((i) => (i.sublist ? { ...i, sublist: likeParent(i.sublist, ordered) } : i)) });
+  const forDocx = (doc: TextDoc): TextDoc => ({ ...doc, blocks: doc.blocks.map((b) => (b.type === "list" ? likeParent(b) : b)) });
+
+  test.each([
+    ["docx", "odt"],
+    ["odt", "docx"],
+  ] as const)("8 %s through LibreOffice to %s reads back to the same model", { timeout: 300_000 }, (from, to) => {
+    const write = { docx: writeDocx, odt: writeOdt };
+    const read = { docx: readDocx, odt: readOdt };
+    const input = from === "odt" ? forDocx(fixture) : fixture;
+    const { bytes } = write[from](input);
+    const converted = lo!.convert(bytes, from, to);
+    const back = read[to](converted);
+    const expected = normalizeTextDoc(input);
+    records.push({ format: `${from}->${to}`, case: "fixture", written: sha256(bytes), resaved: sha256(converted), pdfBytes: 0, equal: isDeepStrictEqual(back.model, expected) });
+    expect(back.model).toEqual(expected);
+  });
+});

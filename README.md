@@ -7,7 +7,7 @@
 
 Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.
 
-> Status: early. The neutral models, the input guards, ODT, ODS, and XLSX work. The other
+> Status: early. The neutral models, the input guards, ODT, DOCX, ODS, and XLSX work. The other
 > formats land next, one family per release. The package is not on npm yet.
 
 ## Install
@@ -30,6 +30,9 @@ npm install agentic-formats
   tables with a header row, images, footnotes, and the document title. A round-trip test has
   LibreOffice open, print, and re-save our file, and the re-saved file reads back to the same model.
   Each reader and writer returns warnings that name what the format could not hold.
+- **DOCX.** `readDocx` and `writeDocx` handle the same content as ODT: headings, marks, links,
+  nested lists, tables with a header row, images, footnotes, and the title. A round trip through
+  LibreOffice covers DOCX to DOCX, and DOCX to ODT and back.
 - **ODS and XLSX.** `readOds`, `writeOds`, `readXlsx`, and `writeXlsx` handle several sheets,
   strings, numbers, booleans, formulas as text with their cached result, and number formats.
   Formulas use A1 notation in the model (`SUM(A1:B2,Sheet2!C3)`). The ODS code converts them to
@@ -50,7 +53,7 @@ try {
 
 ## Planned
 
-- DOCX documents, ODP and PPTX slide decks.
+- ODP and PPTX slide decks.
 - A CLI (`agentic-formats convert in.odt out.docx`) and MCP tools.
 - Round-trip tests against LibreOffice output.
 
@@ -64,6 +67,10 @@ try {
   A shared XLSX formula is read as its value. Time cells read as a fraction of a day.
 - ODT has no support for merged cells, comments, tracked changes, text boxes, or styles beyond the
   marks in the model. A reader lists each one it skips in `warnings`.
+- A link run carries no underline mark: a viewer underlines a link by itself. A footnote does not
+  start with a space. Two tables in a row merge in Word.
+- LibreOffice keeps no nested list of another kind when it saves DOCX. The sublist takes the kind
+  of its parent. Our DOCX writer and reader keep the kind.
 - A list item holds one paragraph and an optional sublist. Extra paragraphs join with line breaks.
 - Images are PNG, JPEG, or GIF, found by their first bytes. A remote image is never loaded.
 - Lengths in the models are in points. Every reader reads UTF-8 XML only.

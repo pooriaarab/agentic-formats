@@ -91,7 +91,7 @@ function imageXml(node: InlineImage, out: Out): string {
   const path = `Pictures/${name}.${sniffed.ext}`;
   out.images.push({ path, mime: sniffed.mime, data: node.data });
   const [w, h] = frameSize(node.width, node.height, sniffed);
-  const alt = node.alt ? `<svg:title>${esc(node.alt)}</svg:title>` : "";
+  const alt = node.alt ? `<svg:desc>${esc(node.alt)}</svg:desc>` : "";
   return `<draw:frame draw:name="${name}" text:anchor-type="as-char" svg:width="${cm(w)}" svg:height="${cm(h)}"><draw:image xlink:href="${path}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/>${alt}</draw:frame>`;
 }
 
@@ -252,6 +252,49 @@ export function writeOdt(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
 const SPACE = "\u0001"; // a space that came from <text:s>, kept through trimming
 const NAMED_MARKS = new Map<string, Mark[]>([["Source_20_Text", ["code"]], ["Strong_20_Emphasis", ["bold"]], ["Emphasis", ["italic"]]]);
 const IGNORED = /^(text:(sequence-decls|variable-decls|user-field-decls|tracked-changes|soft-page-break|bookmark|bookmark-start|bookmark-end|index-title|toc-mark.*)|office:forms|text:note-citation)$/;
+/**
+ * LibreOffice writes a sublist of another list style as an empty item that holds only the sublist,
+ * after the item it belongs to, and may close the parent list before it. Move the sublist back.
+ */
+function attachWrappedSublists(items: ListItem[]): ListItem[] {
+  const out: ListItem[] = [];
+  for (const item of items) {
+    const host = out[out.length - 1];
+    if (host && !host.sublist && item.content.length === 0 && item.sublist) host.sublist = item.sublist;
+    else out.push(item);
+  }
+  return out;
+}
+
+/** Hang a wrapper item's sublist under the last item of `host`, going down one level for each nested wrapper. */
+function graft(host: List, wrapper: ListItem): boolean {
+  const last = host.items[host.items.length - 1];
+  const inner = wrapper.sublist;
+  if (!last || !inner) return false;
+  if (!last.sublist) {
+    last.sublist = inner;
+    return true;
+  }
+  const [first, ...rest] = inner.items;
+  if (first && first.content.length === 0 && first.sublist && graft(last.sublist, first)) {
+    last.sublist.items.push(...rest);
+    return true;
+  }
+  return false;
+}
+
+function attachWrappedLists(blocks: Block[]): Block[] {
+  const out: Block[] = [];
+  for (const block of blocks) {
+    const prev = out[out.length - 1];
+    const [first, ...rest] = block.type === "list" ? block.items : [];
+    if (block.type === "list" && prev?.type === "list" && first && first.content.length === 0 && graft(prev, first)) {
+      if (rest.length) out.push({ ...block, items: rest });
+    } else out.push(block);
+  }
+  return out;
+}
+
 /** A repeat count above this is a hostile or broken file, not a table. */
 const MAX_REPEAT = 1000;
 /** A `<text:s>` element stands for this many spaces at most. */
@@ -325,7 +368,11 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   // A few bytes of `<text:s text:c="1000"/>` stand for a thousand spaces, and an image part is shared by every frame that names it.
   const chargeSpaces = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} spaces in <text:s> elements`);
   const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
-  const run = (value: string, marks: Mark[], href?: string): TextRun => ({ type: "text", text: value, ...(marks.length ? { marks } : {}), ...(href ? { href } : {}) });
+  // A viewer underlines a link by itself, so a link run carries no underline mark.
+  const run = (value: string, marks: Mark[], href?: string): TextRun => {
+    const shown = href ? marks.filter((m) => m !== "underline") : marks;
+    return { type: "text", text: value, ...(shown.length ? { marks: shown } : {}), ...(href ? { href } : {}) };
+  };
 
   function frame(el: XmlElement): Inline[] {
     const picture = childOf(el, "draw:image");
@@ -338,7 +385,7 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
       return [];
     }
     chargeImages(data.length);
-    const alt = textOf(childOf(el, "svg:title")).trim() || textOf(childOf(el, "svg:desc")).trim();
+    const alt = textOf(childOf(el, "svg:desc")).trim() || textOf(childOf(el, "svg:title")).trim();
     const width = lengthPt(el.attrs["svg:width"]);
     const height = lengthPt(el.attrs["svg:height"]);
     return [{ type: "image", data, mime: sniffed.mime, ...(alt ? { alt } : {}), ...(width && height ? { width, height } : {}) }];
@@ -414,7 +461,7 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
         const sublist = lists.length ? { ...lists[0], items: lists.flatMap((l) => l.items) } : undefined;
         return { content, ...(sublist ? { sublist } : {}) };
       });
-    return { type: "list", ordered, items };
+    return { type: "list", ordered, items: attachWrappedSublists(items) };
   }
 
   const repeat = (el: XmlElement, attr: string): number => {
@@ -505,7 +552,7 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
           if (!IGNORED.test(el.name)) warn(el.name);
       }
     }
-    return out;
+    return attachWrappedLists(out);
   }
 
   const doc: TextDoc = { ...(title ? { title } : {}), blocks: blocksOf(text, 0, false) };

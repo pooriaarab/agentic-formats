@@ -133,12 +133,24 @@ export function textLength(blocks: Block[]): number {
   }, 0);
 }
 
+/** A footnote does not start with a space: Word and LibreOffice put one after the note number. */
+function normalizeFootnote(note: Footnote): Footnote {
+  const content = normalizeInline(note.content) as Footnote["content"];
+  const first = content[0];
+  if (first?.type === "text") {
+    const text = first.text.trimStart();
+    if (text) content[0] = { ...first, text };
+    else content.shift();
+  }
+  return { ...note, content };
+}
+
 /** Merge runs that look the same, drop empty ones, and put marks in the canonical order. */
 export function normalizeInline(content: Inline[]): Inline[] {
   const out: Inline[] = [];
   for (const node of content) {
     if (node.type !== "text") {
-      out.push(node.type === "footnote" ? { ...node, content: normalizeInline(node.content) as Footnote["content"] } : node);
+      out.push(node.type === "footnote" ? normalizeFootnote(node) : node);
       continue;
     }
     if (!node.text) continue;
