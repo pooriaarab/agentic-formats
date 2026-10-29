@@ -87,6 +87,8 @@ function shapeXml(shape: SlideShape, out: SlideOut): string {
 }
 
 function shapeXmlOf(shape: SlideShape, out: SlideOut): string {
+  // A description is escaped, which grows it up to six times, so it counts before the string exists.
+  if (shape.type === "picture") out.bytes(6 * (shape.alt?.length ?? 0));
   const id = ++out.nextShape;
   switch (shape.type) {
     case "textbox":
@@ -266,7 +268,10 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   // An image part is shared by every picture that names it, so each picture counts its bytes.
   const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
   const slides: Slide[] = [];
-  for (const entry of elementsOf(childOf(presentation, "p:sldIdLst"))) {
+  const slideEntries = elementsOf(childOf(presentation, "p:sldIdLst"));
+  // The writers refuse more slides than this, so a file that lists more is not read.
+  if (slideEntries.length > caps.maxEntries / 4) throw new FormatError("LIMIT_EXCEEDED", `the PPTX file lists more than ${caps.maxEntries / 4} slides`);
+  for (const entry of slideEntries) {
     const slideRel = rels.get(entry.attrs["r:id"] ?? "");
     if (!slideRel || slideRel.external || !pkg.files[slideRel.target]) {
       warn("a slide that is missing");

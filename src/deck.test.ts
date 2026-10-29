@@ -214,12 +214,15 @@ describe("slow files", () => {
     }
   });
 
-  test("11 one empty linked run that a model holds millions of times writes no relationships", { timeout: 60_000 }, () => {
+  test("11 millions of empty runs that a model holds are charged for the string they make", { timeout: 60_000 }, () => {
     const empty = { type: "text" as const, text: "", href: "a" };
     const model: Deck = { width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame, paragraphs: [Array.from({ length: 4_000_000 }, () => empty)] }] }] };
     const started = Date.now();
     expect(() => writePptx(model)).toThrow(/while it is written/);
     expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  test("11 an empty linked run writes no relationship, and an in-page link is reported", () => {
     const linked = writePptx({ width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame, paragraphs: [[{ type: "text", text: "x", href: "#top" }, { type: "text", text: "", href: "https://example.org/e" }]] }] }] });
     expect(linked.warnings).toEqual(["an in-page link was written as plain text"]);
     expect(strFromU8(files(linked.bytes)["ppt/slides/_rels/slide1.xml.rels"])).not.toContain("example.org");
@@ -228,9 +231,22 @@ describe("slow files", () => {
   test("11 a model of the wrong shape is an INVALID_MODEL error, not a TypeError", () => {
     const wrong = (slide: unknown) => ({ width: 720, height: 405, slides: [slide] }) as unknown as Deck;
     const shape = (s: unknown) => wrong({ shapes: [s] });
-    for (const model of [wrong({}), wrong({ shapes: [], notes: 7 }), shape(null), shape({ type: "textbox", frame, paragraphs: "x" }), shape({ type: "textbox", frame, paragraphs: [[{ type: "text", text: 7 }]] }), shape({ type: "picture", frame, data: PNG, mime: "image/png", alt: 5 })]) {
+    for (const model of [{ width: 720, height: 405, slides: {} } as unknown as Deck, wrong(null), wrong({ shapes: [{ type: "text", frame, paragraphs: [] }] }), wrong({ shapes: [{ type: "shape", kind: "rectangle" }] }), wrong({}), wrong({ shapes: [], notes: 7 }), shape(null), shape({ type: "textbox", frame, paragraphs: "x" }), shape({ type: "textbox", frame, paragraphs: [[{ type: "text", text: 7 }]] }), shape({ type: "picture", frame, data: PNG, mime: "image/png", alt: 5 })]) {
       for (const write of [writePptx, writeOdp]) expect(() => write(model)).toThrow(FormatError);
     }
+  });
+
+  test("11 an ODP line outside the bounds, and a deck of too many slides, are not read", () => {
+    const odp = writeOdp({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
+    const far = readOdp(patch(odp, "content.xml", (x) => x.replace("</draw:page>", `<draw:line svg:x1="-${"9".repeat(300)}cm" svg:y1="0cm" svg:x2="${"9".repeat(300)}cm" svg:y2="0cm"/></draw:page>`)));
+    expect(far.model.slides[0].shapes[1]).toMatchObject({ kind: "line", frame: { x: 0, y: 0, width: 0, height: 0 } });
+    expect(far.warnings).toEqual(["a shape with a position or size outside the slide bounds was placed at the top left corner"]);
+    const page = (n: number) => `<draw:page draw:name="p${n}" draw:master-page-name="Default"/>`;
+    const many = patch(odp, "content.xml", (x) => x.replace("</office:presentation>", `${Array.from({ length: 1300 }, (_, i) => page(i)).join("")}</office:presentation>`));
+    expect(() => readOdp(many)).toThrow(/more than 1250 slides/);
+    const pptx = writePptx({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
+    const listed = patch(pptx, "ppt/presentation.xml", (x) => x.replace("</p:sldIdLst>", `${'<p:sldId id="300" r:id="rId2"/>'.repeat(1300)}</p:sldIdLst>`));
+    expect(() => readPptx(listed)).toThrow(/more than 1250 slides/);
   });
 
   test("11 an ODP shape or deck size outside the bounds is not read", () => {

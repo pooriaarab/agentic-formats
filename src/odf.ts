@@ -58,7 +58,7 @@ export function spacedBound(text: string): number {
   let previous = " ";
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (c === "\n" || c === "\t" || c === "&" || c === "<" || c === ">" || c === '"' || (c === " " && (previous === " " || i === text.length - 1))) n += 20;
+    if (c === "\n" || c === "\t" || c === "&" || c === "<" || c === ">" || c === '"' || c === "\r" || (c === " " && (previous === " " || i === text.length - 1))) n += 20;
     previous = c;
   }
   return n;

@@ -36,6 +36,8 @@ function shapeXml(shape: SlideShape, out: Out): string {
 }
 
 function shapeXmlOf(shape: SlideShape, out: Out): string {
+  // A description is escaped, which grows it up to six times, so it counts before the string exists.
+  if (shape.type === "picture") out.bytes(6 * (shape.alt?.length ?? 0));
   const { frame } = shape;
   switch (shape.type) {
     case "textbox": {
@@ -207,14 +209,14 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     }
     return 0;
   };
-  const frameOf = (el: XmlElement): Frame => {
-    const frame = { x: length(el, "svg:x"), y: length(el, "svg:y"), width: length(el, "svg:width"), height: length(el, "svg:height", "fo:min-height") };
-    // A position or size past the bounds the writers enforce is not read.
+  /** A position or size past the bounds the writers enforce is not read. */
+  const withinBounds = (frame: Frame): Frame => {
     const usable = [frame.x, frame.y].every((n) => Math.abs(n) <= MAX_POINTS) && [frame.width, frame.height].every((n) => n >= 0 && n <= MAX_POINTS);
     if (usable) return frame;
     warnings.add("a shape with a position or size outside the slide bounds was placed at the top left corner");
     return { x: 0, y: 0, width: 0, height: 0 };
   };
+  const frameOf = (el: XmlElement): Frame => withinBounds({ x: length(el, "svg:x"), y: length(el, "svg:y"), width: length(el, "svg:width"), height: length(el, "svg:height", "fo:min-height") });
 
   function shapesOf(page: XmlElement): SlideShape[] {
     const out: SlideShape[] = [];
@@ -262,7 +264,8 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
         case "draw:connector": {
           const [x1, y1, x2, y2] = ["svg:x1", "svg:y1", "svg:x2", "svg:y2"].map((a) => length(el, a));
           const stroke = color(style, false);
-          out.push({ type: "shape", kind: "line", frame: { x: tenth(Math.min(x1, x2)), y: tenth(Math.min(y1, y2)), width: tenth(Math.abs(x2 - x1)), height: tenth(Math.abs(y2 - y1)) }, ...(stroke ? { stroke } : {}) });
+          const frame = { x: tenth(Math.min(x1, x2)), y: tenth(Math.min(y1, y2)), width: tenth(Math.abs(x2 - x1)), height: tenth(Math.abs(y2 - y1)) };
+          out.push({ type: "shape", kind: "line", frame: withinBounds(frame), ...(stroke ? { stroke } : {}) });
           break;
         }
         case "presentation:notes":
@@ -284,6 +287,8 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
       return { shapes: shapesOf(page), ...(notes ? { notes } : {}) };
     });
   if (!slides.length) throw new FormatError("INVALID_FILE", "the ODP file has no slide");
+  // The writers refuse more slides than this, so a file that holds more is not read.
+  if (slides.length > caps.maxEntries / 4) throw new FormatError("LIMIT_EXCEEDED", `the ODP file holds more than ${caps.maxEntries / 4} slides`);
   // The size is the layout of the master page the first slide uses. A file also has layouts for its notes pages.
   const masterName = elementsOf(presentation).find((page) => page.name === "draw:page")?.attrs["draw:master-page-name"];
   const masterPage = [content, stylesPart].flatMap((part) => (part ? [...allOf(part, "style:master-page")] : [])).find((m) => m.attrs["style:name"] === masterName);

@@ -9,6 +9,7 @@ const bad = (message: string): never => {
 };
 
 const checkFrame = (frame: Frame, where: string): void => {
+  if (typeof frame !== "object" || frame === null) bad(`${where} needs a frame`);
   for (const n of [frame.x, frame.y, frame.width, frame.height]) if (!Number.isFinite(n) || Math.abs(n) > MAX_POINTS) bad(`${where} has a position or size that is not usable`);
   if (frame.width < 0 || frame.height < 0) bad(`${where} has a negative size`);
 };
@@ -23,12 +24,15 @@ export function textBound(text: string, perLine: number): number {
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === "\n") n += perLine;
-    else if (c === "&" || c === "<" || c === ">" || c === '"') n += 5;
+    else if (c === "&" || c === "<" || c === ">" || c === '"' || c === "\r") n += 5;
   }
   return n;
 }
 
+const SHAPE_TYPES = ["textbox", "picture", "shape"];
+
 export function checkDeck(deck: Deck, limits: Limits): void {
+  if (typeof deck !== "object" || deck === null || !Array.isArray(deck.slides)) bad("a deck needs a list of slides");
   checkFrame({ x: 0, y: 0, width: deck.width, height: deck.height }, "the deck");
   if (deck.width <= 0 || deck.height <= 0) bad("the deck needs a size above zero");
   if (deck.slides.length === 0) bad("a deck needs at least one slide");
@@ -36,12 +40,14 @@ export function checkDeck(deck: Deck, limits: Limits): void {
   // A run or a note that the model holds in many places is written in each place, so each use counts.
   const chargeText = capped(limits.maxTextChars, `the deck has more than ${limits.maxTextChars} characters of text`);
   deck.slides.forEach((slide, i) => {
+    if (typeof slide !== "object" || slide === null) bad(`slide ${i + 1} is not an object`);
     if (!Array.isArray(slide.shapes)) bad(`slide ${i + 1} needs a list of shapes`);
     if (slide.notes !== undefined && typeof slide.notes !== "string") bad(`slide ${i + 1} has notes that are not a string`);
     chargeText(slide.notes?.length ?? 0);
     slide.shapes.forEach((shape, j) => {
       if (typeof shape !== "object" || shape === null) bad(`slide ${i + 1}, shape ${j + 1} is not an object`);
       const where = `slide ${i + 1}, shape ${j + 1}`;
+      if (!SHAPE_TYPES.includes(shape.type)) bad(`${where} is not a kind of shape`);
       checkFrame(shape.frame, where);
       // A link target or a description that many runs or pictures share is written for each of them.
       if (shape.type === "textbox") {
