@@ -164,7 +164,8 @@ export const xmlEscape = (value: unknown): string =>
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/\r/g, "&#13;");
 
 /**
  * A link target a file may carry: web, mail, in-page, or relative. Anything else, such as

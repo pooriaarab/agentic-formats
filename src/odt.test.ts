@@ -21,6 +21,7 @@
  * 16 a run field of the wrong type turns a cap off; a deep or cyclic model ends in a stack overflow;
  *    one huge run is built before it is charged
  */
+import { isDeepStrictEqual } from "node:util";
 import { DOMParser } from "@xmldom/xmldom";
 import { strFromU8, unzipSync } from "fflate";
 import { afterAll, describe, expect, test } from "vitest";
@@ -478,7 +479,7 @@ describe.skipIf(!hasLibreOffice && !libreOfficeRequired)("LibreOffice round trip
     for (const word of ["Plan", "Details", "two-b", "deep", "Apples", "paragraphs", "ends.", "Claim", "holds."]) expect(text).toContain(word);
     const resaved = lo!.convert(bytes, "odt", "odt");
     const back = readOdt(resaved);
-    const equal = JSON.stringify(back.model) === JSON.stringify(normalizeTextDoc(fixture));
+    const equal = isDeepStrictEqual(back.model, normalizeTextDoc(fixture));
     records.push({ format: "odt", case: "fixture", written: sha256(bytes), resaved: sha256(resaved), pdfBytes: pdf.length, equal });
     expect(back.model).toEqual(normalizeTextDoc(fixture));
   });
