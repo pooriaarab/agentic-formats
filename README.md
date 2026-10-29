@@ -40,7 +40,8 @@ stderr and then waits for a client on stdin. To see the server's options, run
 `warnings` (each one names content that was lost). It refuses to replace a file unless you pass
 `--force`, and it never replaces its input. A file converts to a format of its own kind:
 documents (`odt`, `docx`), spreadsheets (`ods`, `xlsx`), slide decks (`odp`, `pptx`).
-Errors go to stderr and the exit code is 1.
+Errors go to stderr. A refused conversion exits with code 1. A usage error, such as an unknown
+command or flag, exits with code 2.
 
 The MCP server has three tools: `inspect_file`, `read_model` (the file as neutral JSON), and
 `convert_file`. Every path stays inside one folder. With no variable set, that folder is the
