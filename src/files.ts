@@ -91,6 +91,9 @@ export function readInput(path: string, limits?: Partial<Limits>): Uint8Array {
  */
 export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean, input?: string): void {
   if (input !== undefined && existsSync(path) && realpathSync(path) === realpathSync(input)) throw new UsageError("the output is the input file");
+  // A named pipe or a device as the output would block the server at open, or write to a place that is not a file.
+  const existing = exists(path) ? lstatSync(path) : undefined;
+  if (existing && !existing.isFile() && !existing.isSymbolicLink()) throw new UsageError(`"${path}" is not a plain file`);
   let fd: number;
   try {
     fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (overwrite ? 0 : constants.O_EXCL), 0o666);

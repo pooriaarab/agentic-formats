@@ -283,9 +283,12 @@ describe("mcp output links", () => {
     linkSync(join(outside, "victim.docx"), join(root, "hard.docx"));
     const client = await connect(root);
     try {
+      const why: Record<string, RegExp> = { "dangling.docx": /points nowhere/, "live.docx": /outside the allowed folder/, "hard.docx": /outside the allowed folder|more than one name|pass --force/ };
       for (const output of ["dangling.docx", "live.docx", "hard.docx"]) {
         for (const overwrite of [true, false]) {
-          expect((await call(client, "convert_file", { input: "in.odt", output, overwrite })).isError, `${output} ${overwrite}`).toBe(true);
+          const r = await call(client, "convert_file", { input: "in.odt", output, overwrite });
+          expect(r.isError, `${output} ${overwrite}`).toBe(true);
+          expect(r.text, `${output} ${overwrite}`).toMatch(why[output]);
         }
       }
       expect(existsSync(join(outside, "new.docx"))).toBe(false);
@@ -293,6 +296,24 @@ describe("mcp output links", () => {
       const dangling = await call(client, "convert_file", { input: "in.odt", output: "dangling.docx", overwrite: true });
       expect(dangling.text).toMatch(/points nowhere/);
       expect((await call(client, "convert_file", { input: "in.odt", output: "fresh.docx" })).isError).toBe(false);
+      // A second name for a file inside the folder is fine to read, and a plain file there is replaced only on request.
+      expect((await call(client, "convert_file", { input: "in.odt", output: "fresh.docx" })).text).toMatch(/pass --force/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("9 a named pipe as the output does not block the server", { timeout: 60_000 }, async () => {
+    const root = at("fifo-root");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "in.odt"), readFileSync(at("doc.odt")));
+    expect(spawnSync("mkfifo", [join(root, "pipe.docx")]).status).toBe(0);
+    const client = await connect(root);
+    try {
+      const r = await call(client, "convert_file", { input: "in.odt", output: "pipe.docx", overwrite: true });
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(/not a plain file/);
+      expect(await call(client, "inspect_file", { path: "in.odt" })).toMatchObject({ isError: false });
     } finally {
       await client.close();
     }
@@ -301,7 +322,7 @@ describe("mcp output links", () => {
   test("9 read_model refuses a model past the reply cap and says where the counts are", { timeout: 120_000 }, async () => {
     const root = at("big-root");
     mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, "big.ods"), writeOds({ sheets: [{ name: "S", cells: { A1: { value: randomBytes(7_000_000).toString("base64") } } }] }).bytes);
+    writeFileSync(join(root, "big.ods"), writeOds({ sheets: [{ name: "S", cells: { A1: { value: randomBytes(5_900_000).toString("base64") }, ...Object.fromEntries(Array.from({ length: 30_000 }, (_, i) => [`B${i + 1}`, { value: "v" }])) } }] }).bytes);
     const client = await connect(root);
     try {
       const read = await call(client, "read_model", { path: "big.ods" });

@@ -128,7 +128,7 @@ export const MAX_MODEL_JSON = 8 * 1024 * 1024;
 export function modelJson(model: unknown, max = MAX_MODEL_JSON): string {
   let size = 0;
   return JSON.stringify(model, (key, value: unknown) => {
-    size += key.length + (typeof value === "string" ? value.length + 2 : 8);
+    size += key.length + (typeof value === "string" ? JSON.stringify(value).length : String(value).length);
     if (size > max) throw new FormatError("LIMIT_EXCEEDED", `the model is larger than ${max} characters as JSON; use inspect_file for counts`);
     return value instanceof Uint8Array ? { bytes: value.length } : value;
   });
