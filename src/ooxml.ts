@@ -80,7 +80,15 @@ export function readOoxmlPackage(bytes: Uint8Array, limits: Limits, kind: string
     if (!files[part]) throw new FormatError("INVALID_FILE", `the ${kind} file has no ${part}`);
     return parseXml(files[part], limits, OOXML_NAMESPACES);
   };
+  const relsCache = new Map<string, Map<string, Relationship>>();
   const rels = (part: string): Map<string, Relationship> => {
+    const cached = relsCache.get(part);
+    if (cached) return cached;
+    const read = relsOf(part);
+    relsCache.set(part, read);
+    return read;
+  };
+  const relsOf = (part: string): Map<string, Relationship> => {
     const dir = part.split("/").slice(0, -1).join("/");
     const path = `${dir ? `${dir}/` : ""}_rels/${part.split("/").pop()}.rels`;
     const out = new Map<string, Relationship>();

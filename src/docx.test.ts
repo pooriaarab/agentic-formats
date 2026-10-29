@@ -203,6 +203,36 @@ describe("a link inside a footnote", () => {
     expect(toStyles.warnings).toEqual(["a link whose relationship is missing or is not a link was read as plain text"]);
   });
 
+  test("11 many footnotes and a large footnotes relationships part read in linear time", { timeout: 60_000 }, () => {
+    const base = writeDocx(doc).bytes;
+    const links = Array.from({ length: 9000 }, (_, i) => `<Relationship Id="rIdX${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.org/${i}" TargetMode="External"/>`).join("");
+    const notes = Array.from({ length: 200_000 }, (_, i) => `<w:footnote w:id="${i + 10}"/>`).join("");
+    const big = patch(patch(base, "word/_rels/footnotes.xml.rels", (x) => x.replace("</Relationships>", `${links}</Relationships>`)), "word/footnotes.xml", (x) => x.replace("</w:footnotes>", `${notes}</w:footnotes>`));
+    const started = Date.now();
+    expect(readDocx(big).model.blocks).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  test("11 a footnote that holds a footnote, an image, or itself is refused, not followed", () => {
+    const cyclic = { type: "footnote" as const, content: [] as unknown[] };
+    cyclic.content.push(cyclic);
+    const nested = { type: "footnote" as const, content: [{ type: "footnote", content: [text("x")] }] };
+    const withImage = { type: "footnote" as const, content: [{ type: "image", data: PNG, mime: "image/png" }] };
+    for (const note of [cyclic, nested, withImage]) {
+      expect(() => writeDocx({ blocks: [{ type: "paragraph", content: [note as never] }] })).toThrow(/a footnote holds only text and line breaks/);
+    }
+    let deep: unknown = { type: "footnote", content: [text("x")] };
+    for (let i = 0; i < 20_000; i++) deep = { type: "footnote", content: [deep] };
+    expect(() => writeDocx({ blocks: [{ type: "paragraph", content: [deep as never] }] })).toThrow(FormatError);
+  });
+
+  test("11 a model of the wrong shape is an INVALID_MODEL error, not a TypeError", () => {
+    const wrong = (blocks: unknown) => ({ blocks }) as unknown as TextDoc;
+    for (const model of [wrong(null), wrong([null]), wrong([{ type: "list", ordered: false, items: [null] }]), wrong([{ type: "table", rows: [[["x"]]] }]), wrong([{ type: "paragraph", content: [{ type: "text", text: "x", marks: 5 }] }])]) {
+      expect(() => writeDocx(model), JSON.stringify(model)).toThrow(FormatError);
+    }
+  });
+
   test("11 an image or a note inside a footnote that is dropped on read is reported", () => {
     const two: TextDoc = { blocks: [{ type: "paragraph", content: [{ type: "footnote", content: [text("one")] }, { type: "footnote", content: [text("two")] }] }] };
     const base = writeDocx(two).bytes;
@@ -323,7 +353,7 @@ describe("a writer that gets one object in many places", () => {
       expect(() => writeDocx(doc(run)), JSON.stringify(run)).toThrow(/needs text and a link that are strings/);
     }
     expect(() => writeDocx(doc(null))).toThrow(/is not an object/);
-    expect(() => writeDocx({ blocks: [{ type: "list", ordered: false }] } as unknown as TextDoc)).toThrow(/needs a list of items/);
+    expect(() => writeDocx({ blocks: [{ type: "list", ordered: false }] } as unknown as TextDoc)).toThrow(/the items of a list must be a list/);
     expect(() => writeDocx({ blocks: [{ type: "paragraph", content: [{ type: "image", data: "x", mime: "image/png" }] }] } as unknown as TextDoc)).toThrow(/Uint8Array/);
     let deep: Block = { type: "list", ordered: false, items: [{ content: [] }] };
     for (let i = 0; i < 20_000; i++) deep = { type: "list", ordered: false, items: [{ content: [], sublist: deep as List }] };

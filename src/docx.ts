@@ -2,6 +2,8 @@ import { frameSize, sniffImage } from "./image.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import {
   MARKS,
+  checkList,
+  checkObject,
   checkRun,
   normalizeInline,
   normalizeTextDoc,
@@ -118,7 +120,7 @@ function runBound(text: string): number {
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === "\t" || c === "\n") n += 48;
-    else if (c === "&" || c === "<" || c === ">" || c === '"') n += 5;
+    else if (c === "&" || c === "<" || c === ">" || c === '"' || c === "\r") n += 5;
   }
   return n;
 }
@@ -166,6 +168,10 @@ function inlineXml(nodes: Inline[], out: Out): string {
           case "image":
             return imageXml(node, out);
           case "footnote": {
+            // A note holds text and line breaks only. A note inside a note would get the same id as its parent, and a cyclic one would recurse forever.
+            if (!Array.isArray(node.content) || node.content.some((inner) => typeof inner !== "object" || inner === null || (inner.type !== "text" && inner.type !== "break"))) {
+              throw new FormatError("INVALID_MODEL", "a footnote holds only text and line breaks");
+            }
             const id = out.notes.length + 1;
             const note = `<w:footnote w:id="${id}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r>${noteContent(node.content, out)}</w:p></w:footnote>`;
             out.bytes(note.length);
@@ -203,7 +209,8 @@ function listXml(list: List, depth: number, out: Out): string {
 }
 
 function listXmlOf(list: List, depth: number, out: Out): string {
-  if (!Array.isArray(list.items)) throw new FormatError("INVALID_MODEL", "a list needs a list of items");
+  checkList(list.items, "the items of a list");
+  for (const item of list.items) checkObject(item, "an item of a list");
   if (depth > 8) out.warnings.add("a list nests deeper than nine levels: the deepest levels were flattened");
   const level = Math.min(depth, 8);
   const numId = out.nums.push(list.ordered);
@@ -225,7 +232,11 @@ function tableXml(table: Table, out: Out): string {
 }
 
 function tableXmlOf(table: Table, out: Out): string {
-  if (!Array.isArray(table.rows) || table.rows.some((row) => !Array.isArray(row))) throw new FormatError("INVALID_MODEL", "a table needs rows that are lists of cells");
+  checkList(table.rows, "the rows of a table");
+  for (const row of table.rows) {
+    checkList(row, "a row of a table");
+    for (const cell of row) checkList(cell, "a cell of a table");
+  }
   const columns = table.rows.reduce((n, r) => Math.max(n, r.length), 1);
   const width = Math.floor(9000 / columns);
   const row = (cells: Block[][], header: boolean) =>
@@ -249,6 +260,7 @@ function blockXml(block: Block, out: Out, depth = 0): string {
 }
 
 function blockXmlOf(block: Block, out: Out, depth: number): string {
+  checkObject(block, "a block");
   switch (block.type) {
     case "paragraph":
       return `<w:p>${inlineXml(block.content, out)}</w:p>`;
@@ -281,6 +293,7 @@ export function writeDocx(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
     charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`),
     bytes: capped(caps.maxTotalBytes, `the document passes ${caps.maxTotalBytes} bytes while it is written`),
   };
+  checkList(doc?.blocks, "the blocks of a document");
   const body = doc.blocks.map((b) => blockXml(b, out)).join("");
   const document =
     `${XML_HEADER}<w:document ${NS}><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
@@ -404,7 +417,7 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
     const blip = find(el, "a:blip");
     if (!blip) return warn("a drawing that is not a picture"), [];
     if (blip.attrs["r:link"]) return warnings.add("a remote image: not loaded"), [];
-    const target = rels.get(blip.attrs["r:embed"] ?? "");
+    const target = activeRels.get(blip.attrs["r:embed"] ?? "");
     const data = target && !target.external ? pkg.files[target.target] : undefined;
     const sniffed = data ? sniffImage(data) : undefined;
     if (!data || !sniffed) return warnings.add("an image that is not a PNG, JPEG, or GIF: not imported"), [];
@@ -424,9 +437,11 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   const notesPart = partOf("footnotes");
   /** The relationships that links in the part being read resolve against: the document's, or the footnotes part's. */
   let activeRels = rels;
+  // Read once: every note resolves its links against the same part.
+  const noteRelations = notesPart ? pkg.rels(notesPart) : rels;
   const readNote = (note: XmlElement): Footnote => {
     const before = activeRels;
-    activeRels = notesPart ? pkg.rels(notesPart) : rels;
+    activeRels = noteRelations;
     try {
       const content = elementsOf(note)
         .filter((p) => p.name === "w:p")
