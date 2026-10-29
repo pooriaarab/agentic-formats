@@ -39,13 +39,29 @@ describe("writeOutput is atomic", () => {
     expect(readFileSync(join(d, "out.bin"), "utf8")).toBe("new");
   });
 
-  test("a link refused up front, and a link swapped in later is replaced and never followed", () => {
+  test("a link at the path is refused for both modes and its target is not written", () => {
     const d = join(dir, "d");
     mkdirSync(d);
     writeFileSync(join(d, "victim"), "original");
     symlinkSync(join(d, "victim"), join(d, "out.bin"));
     for (const overwrite of [true, false]) expect(() => writeOutput(join(d, "out.bin"), bytes("x"), overwrite)).toThrow(/is a link/);
     expect(readFileSync(join(d, "victim"), "utf8")).toBe("original");
+  });
+
+  test("a long name and a mode with the umask in the way both survive", () => {
+    const d = join(dir, "g");
+    mkdirSync(d);
+    const long = join(d, "n".repeat(250));
+    writeOutput(long, bytes("a"), false);
+    chmodSync(long, 0o666);
+    const old = process.umask(0o077);
+    try {
+      writeOutput(long, bytes("b"), true);
+    } finally {
+      process.umask(old);
+    }
+    expect(statSync(long).mode & 0o777).toBe(0o666);
+    expect(readdirSync(d)).toEqual(["n".repeat(250)]);
   });
 
   test("without overwrite, the name taken by another writer fails and keeps that file", () => {

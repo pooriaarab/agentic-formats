@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { FormatError, withLimits, type Limits } from "./limits.js";
@@ -100,13 +100,31 @@ export function readInput(path: string, limits?: Partial<Limits>): Uint8Array {
   }
 }
 
+/** Make `path` from the bytes of `temp` where a hard link is not possible. It fails if `path` exists, and never follows a link. */
+function createNew(path: string, temp: string): void {
+  const bytes = readFileSync(temp);
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o666);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`"${path}" exists; pass --force to replace it`);
+    throw error;
+  }
+  try {
+    for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
  * Write a file in one step. The bytes go to a new temporary file in the same folder, then a rename (or, without
  * `overwrite`, a hard link that fails if the name is taken) puts them at the path. A reader sees the old file or
  * the whole new one, never a part. Because the last step acts on the name and not on a file opened by name,
  * a link or a second name swapped in after the checks is replaced, never followed, so nothing outside the path
  * changes. It refuses to replace a file unless `overwrite` is true, never replaces the input, and refuses a link
- * or a file that is not plain.
+ * or a file that is not plain. A replaced file keeps its mode but not its owner, ACLs, or a read-only bit that blocks
+ * the write; like `mv`, it needs only a folder that can be written.
  */
 export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean, input?: string): void {
   if (input !== undefined && existsSync(path) && realpathSync(path) === realpathSync(input)) throw new UsageError("the output is the input file");
@@ -115,12 +133,14 @@ export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean,
   if (existing && existing.isSymbolicLink()) throw new UsageError(`"${path}" is a link; the output must be a plain file`);
   if (existing && !existing.isFile()) throw new UsageError(`"${path}" is not a plain file`);
   if (existing && !overwrite) throw new UsageError(`"${path}" exists; pass --force to replace it`);
-  const temp = join(dirname(path), `.${basename(path)}.${randomBytes(8).toString("hex")}.tmp`);
+  const temp = join(dirname(path), `.${basename(path).slice(0, 32)}.${randomBytes(8).toString("hex")}.tmp`);
   // O_EXCL fails on any name that exists, a link included, and O_NOFOLLOW backs it up.
   const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), existing ? existing.mode & 0o777 : 0o666);
   try {
     try {
       for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
+      // The mode given to open went through the umask; set it as it was.
+      if (existing) fchmodSync(fd, existing.mode & 0o777);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -128,7 +148,13 @@ export function writeOutput(path: string, bytes: Uint8Array, overwrite: boolean,
     if (overwrite) renameSync(temp, path);
     else linkSync(temp, path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new UsageError(`"${path}" exists; pass --force to replace it`);
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") throw new UsageError(`"${path}" exists; pass --force to replace it`);
+    // Some filesystems (FAT, some network mounts) have no hard links.
+    if (!overwrite && (code === "EPERM" || code === "ENOTSUP" || code === "EXDEV")) {
+      createNew(path, temp);
+      return;
+    }
     throw error;
   } finally {
     // After a rename the temporary name is gone; after a link or a failure it is not.
