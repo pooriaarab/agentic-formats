@@ -503,5 +503,19 @@ describe("PDF writer, review round 4", () => {
     expect(contentText(r.bytes)).not.toContain("SECRET");
     expect(contentText(writePdf({ blocks: [para("co\u00adop")] }).bytes)).toBe("coop");
   });
+
+  test("2 a line break inside a run is a line break; a long numbered list keeps its numbers clear of the text", () => {
+    const deck = { width: 300, height: 100, slides: [{ shapes: [{ type: "textbox" as const, frame: { x: 0, y: 0, width: 300, height: 60 }, paragraphs: [[text("Line one\nLine two")]] }] }] };
+    expect(contentText(writePdf(deck).bytes)).toBe("Line oneLine two");
+    expect(latin(writePdf(deck).bytes)).not.toContain("Line one Line two");
+    if (hasPdftotext) expect(pdftotext(writePdf(deck).bytes)).toMatch(/Line one\s*\n\s*Line two/);
+    const items = Array.from({ length: 120 }, (_, i) => ({ content: [text(`item ${i + 1}`)] }));
+    if (hasPdftotext) expect(pdftotext(writePdf({ blocks: [{ type: "list", ordered: true, items }] }).bytes)).toMatch(/100\.\s+item 100/);
+  });
+
+  test("5 an image that fills a table cell does not report a cut row", () => {
+    const tall = { type: "paragraph" as const, content: [{ type: "image" as const, data: PNG, mime: "image/png" as const, width: 300, height: 2000 }] };
+    expect(writePdf({ blocks: [{ type: "table", rows: [[[tall]]] }] }).warnings).toEqual([]);
+  });
 });
 

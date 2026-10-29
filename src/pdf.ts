@@ -388,13 +388,15 @@ interface Atom {
 
 /** Runs as atoms: text already encoded, with the style a segment needs. A newline is a hard break. */
 function atomsOf(pdf: Pdf, runs: TextRun[], bold: boolean): Atom[] {
-  return runs.map((r) => {
+  return runs.flatMap((r) => {
     const link = r.href !== undefined ? safeHref(r.href) : undefined;
     const external = link !== undefined && /^(https?:|mailto:)/i.test(link) && /^[\x21-\x7e]+$/.test(link) ? link : undefined;
     if (r.href !== undefined && !external) pdf.warnings.add("a link that is not a web or mail address was written as plain text");
     if (r.marks?.includes("code") && (r.marks.includes("bold") || r.marks.includes("italic"))) pdf.warnings.add("bold and italic on code text are written as plain Courier");
     if (r.marks?.includes("superscript") || r.marks?.includes("subscript")) pdf.warnings.add("superscript and subscript are written as plain text");
-    return { text: r.text === "\n" ? "\n" : pdf.encode(r.text), face: faceOf(r.marks, bold), underline: r.marks?.includes("underline") || !!external, strike: r.marks?.includes("strike"), href: external };
+    const style = { face: faceOf(r.marks, bold), underline: r.marks?.includes("underline") || !!external, strike: r.marks?.includes("strike"), href: external };
+    // A newline in a run is a line break, as the PPTX and ODP readers merge a break into the text beside it.
+    return r.text.split("\n").flatMap((piece, i): Atom[] => [...(i > 0 ? [{ text: "\n", ...style }] : []), { text: pdf.encode(piece), ...style }]);
   });
 }
 
@@ -557,6 +559,8 @@ interface Item {
   h: number;
   /** Draw with the top left corner at `x`, and `top` points down from the top of the page. */
   draw: (page: Page, x: number, top: number) => void;
+  /** Blank space only: it is not content, so a row that is cut through it loses nothing. */
+  gap?: boolean;
 }
 interface Ctx {
   pdf: Pdf;
@@ -568,7 +572,7 @@ interface Ctx {
 const append = (to: Item[], from: Item[]): void => {
   for (const item of from) to.push(item);
 };
-const gap = (h: number): Item => ({ h, draw: () => {} });
+const gap = (h: number): Item => ({ h, draw: () => {}, gap: true });
 
 function lineItem(line: Line, size: number, dx: number): Item {
   return {
@@ -585,7 +589,7 @@ function imageItem(ctx: Ctx, node: Extract<Inline, { type: "image" }>, width: nu
   const img = ctx.pdf.image(node.data);
   if (!img) return undefined;
   const [w0, h0] = frameSize(node.width, node.height, sniffImage(node.data)!);
-  const scale = Math.min(1, (width - dx) / w0, (CONTENT_H - 2 * CELL_PAD) / h0);
+  const scale = Math.min(1, (width - dx) / w0, (CONTENT_H - 2 * CELL_PAD - 4) / h0);
   const [w, h] = [Math.max(1, w0 * scale), Math.max(1, h0 * scale)];
   return { h: h + 4, draw: (page, x, top) => page.ops.push(`q ${num(w)} 0 0 ${num(h)} ${num(x + dx)} ${num(PAGE_H - top - h)} cm /${img.name} Do Q`) };
 }
@@ -640,15 +644,17 @@ function listItems(ctx: Ctx, list: List, width: number, dx: number): Item[] {
     ctx.pdf.warnings.add("a list nested too deep was written at the deepest indent that fits");
     dx = maxIndent(width);
   }
+  // The numbers of a long ordered list are wider than the bullet, so the text starts after the widest one.
+  const gutter = list.ordered ? Math.max(18, Math.ceil([...`${list.items.length}.`].reduce((n, c) => n + (charWidth(c.charCodeAt(0), "F1") * BODY) / 1000, 0)) + 4) : 18;
   list.items.forEach((item, i) => {
     const marker = list.ordered ? `${i + 1}.` : "\x95";
-    const inner = inlineItems(ctx, item.content, width, dx + 18, BODY, false);
+    const inner = inlineItems(ctx, item.content, width, dx + gutter, BODY, false);
     const drawMarker = (page: Page, x: number, top: number): void => drawLine(page, [{ text: marker, face: "F1", width: 0 }], BODY, x + dx, PAGE_H - top - BODY);
     const lead = inner[0];
     if (lead) inner[0] = { h: lead.h, draw: (page, x, top) => (drawMarker(page, x, top), lead.draw(page, x, top)) };
     else inner.push({ h: BODY * 1.3, draw: drawMarker });
     for (const n of inner) out.push(n);
-    if (item.sublist) for (const n of listItems(ctx, item.sublist, width, dx + 18)) out.push(n);
+    if (item.sublist) for (const n of listItems(ctx, item.sublist, width, dx + gutter)) out.push(n);
   });
   return out;
 }
@@ -669,7 +675,13 @@ function tableItems(ctx: Ctx, block: Extract<Block, { type: "table" }>, width: n
     });
     let h = cells.reduce((m, c) => Math.max(m, c.reduce((n, i) => n + i.h, 0)), 0) + 2 * CELL_PAD;
     if (h > CONTENT_H) {
-      ctx.pdf.warnings.add("a table row taller than a page was cut to fit");
+      // Blank space at the end of a cell is not content, so only a row with more than that to cut is reported.
+      const content = cells.reduce((m, c) => {
+        let end = c.length;
+        while (end > 0 && c[end - 1].gap) end--;
+        return Math.max(m, c.slice(0, end).reduce((n, i) => n + i.h, 0));
+      }, 0);
+      if (content + 2 * CELL_PAD > CONTENT_H) ctx.pdf.warnings.add("a table row taller than a page was cut to fit");
       h = CONTENT_H;
     }
     out.push({
