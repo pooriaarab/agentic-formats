@@ -431,6 +431,13 @@ describe("hostile files", () => {
     expect(warnings(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('r="A1" t="inlineStr"><is><t xml:space="preserve">x</t></is>', 'r="A1"><f t="array" ref="A1">1+1</f><v>2</v>')))).toEqual(["an array formula or data table was read as a plain formula"]);
   });
 
+  test("13 one unknown format id used by many styles counts once past the cap", () => {
+    const xfs = [...Array.from({ length: 50 }, (_, i) => 100 + i), ...Array.from({ length: 1000 }, () => 999)].map((id) => `<xf numFmtId="${id}"/>`).join("");
+    const read = readXlsx(patch(one, "xl/styles.xml", (x) => x.replace("</cellXfs>", `${xfs}</cellXfs>`)));
+    expect(read.warnings).toHaveLength(51);
+    expect(read.warnings[50]).toBe("1 more warnings");
+  });
+
   test("13 rich text in an inline string is named in a warning", () => {
     const read = readXlsx(patch(one, "xl/worksheets/sheet1.xml", (x) => x.replace('<is><t xml:space="preserve">x</t></is>', "<is><r><rPr><b/></rPr><t>x</t></r></is>")));
     expect(read.model).toEqual(sheet("S", { A1: { value: "x" } }));

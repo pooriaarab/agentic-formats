@@ -174,6 +174,7 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   }
 
   const formatOfStyle: (string | undefined)[] = [];
+  const unknownIds = new Set<number>();
   const stylesPart = partOf("styles");
   if (stylesPart && pkg.files[stylesPart]) {
     const styles = pkg.parse(stylesPart);
@@ -182,7 +183,10 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
       const id = Number(xf.attrs.numFmtId ?? 0);
       if (codes.has(String(id))) formatOfStyle.push(canonicalFormat(codes.get(String(id))!));
       else {
-        if (id !== 0 && !BUILTIN_BY_ID[id]) warnNamed(`the built-in number format ${id} was not read`);
+        if (id !== 0 && !BUILTIN_BY_ID[id] && !unknownIds.has(id)) {
+          unknownIds.add(id);
+          warnNamed(`the built-in number format ${id} was not read`);
+        }
         formatOfStyle.push(BUILTIN_BY_ID[id]);
       }
     }
