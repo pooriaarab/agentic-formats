@@ -18,8 +18,10 @@ export interface Limits {
   maxXmlDepth: number;
   /** Number of elements in one XML part. */
   maxXmlElements: number;
-  /** Number of cells in a workbook. */
+  /** Number of cells in a workbook, or table cells in a text document. Repeat counts count in full. */
   maxCells: number;
+  /** Length of a style's parent chain. */
+  maxStyleDepth: number;
 }
 
 export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
@@ -33,6 +35,7 @@ export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   maxXmlDepth: 100,
   maxXmlElements: 1_000_000,
   maxCells: 1_000_000,
+  maxStyleDepth: 50,
 });
 
 export const withLimits = (limits?: Partial<Limits>): Limits => ({ ...DEFAULT_LIMITS, ...limits });

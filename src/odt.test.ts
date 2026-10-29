@@ -13,6 +13,8 @@
  *  8 an unsafe link or a bad image drops without a word
  *  9 a hostile file is read: a DOCTYPE, a wrong media type, a remote image, a script link
  * 10 LibreOffice cannot open our file, or its re-save does not read back to the same model
+ * 11 a table makes billions of cells from a few repeat counts (rows x cells x repeats, over many tables)
+ * 12 a style parent chain is long, loops, or names a key of Object.prototype
  */
 import { DOMParser } from "@xmldom/xmldom";
 import { strFromU8, unzipSync } from "fflate";
@@ -198,6 +200,68 @@ describe("hostile files", () => {
   test("9 a table that repeats a cell a million times is refused", () => {
     const xml = wrap(`<table:table xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"><table:table-row><table:table-cell table:number-columns-repeated="1000000"/></table:table-row></table:table>`);
     expect(() => readOdt(odt(xml))).toThrow(/repeats/);
+  });
+
+  const TABLE_NS = `xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"`;
+  const cells = (rowRepeat: number, cellRepeat: number, rows = 1) =>
+    `<table:table ${TABLE_NS}>${`<table:table-row table:number-rows-repeated="${rowRepeat}"><table:table-cell table:number-columns-repeated="${cellRepeat}"/></table:table-row>`.repeat(rows)}</table:table>`;
+  const limitExceeded = (run: () => unknown) => {
+    try {
+      run();
+    } catch (error) {
+      expect(error).toBeInstanceOf(FormatError);
+      expect((error as FormatError).code).toBe("LIMIT_EXCEEDED");
+      return;
+    }
+    throw new Error("expected LIMIT_EXCEEDED");
+  };
+
+  test("11 a thousand rows that repeat a thousand times over a thousand cells are refused fast", () => {
+    const started = Date.now();
+    limitExceeded(() => readOdt(odt(wrap(cells(1000, 1000, 1000)))));
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("11 rows x cells x repeats count against one budget for the whole document, over many tables", () => {
+    const budget = withLimits({ maxCells: 100 });
+    expect(readOdt(odt(wrap(cells(10, 10))), budget).model.blocks).toHaveLength(1);
+    limitExceeded(() => readOdt(odt(wrap(cells(10, 11))), budget));
+    limitExceeded(() => readOdt(odt(wrap(cells(1, 1, 101))), budget));
+    limitExceeded(() => readOdt(odt(wrap(cells(1, 60) + cells(1, 41))), budget));
+  });
+
+  test("11 a nested table counts against the same budget", () => {
+    const inner = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="10"><table:table-cell table:number-columns-repeated="10"/></table:table-row></table:table>`;
+    const nested = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="10"><table:table-cell table:number-columns-repeated="10">${inner}</table:table-cell></table:table-row></table:table>`;
+    limitExceeded(() => readOdt(odt(wrap(nested)), withLimits({ maxCells: 150 })));
+  });
+
+  const STYLE_NS = `xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"`;
+  const withStyles = (styles: string, body: string) =>
+    wrap(body).replace("<office:body>", `<office:automatic-styles ${STYLE_NS}>${styles}</office:automatic-styles><office:body>`);
+  const chain = (length: number) =>
+    Array.from({ length }, (_, i) => `<style:style style:name="s${i}"${i ? ` style:parent-style-name="s${i - 1}"` : ""}/>`).join("");
+
+  test("12 a style chain of twenty thousand styles is refused fast, however many paragraphs use it", () => {
+    const paragraphs = Array.from({ length: 300 }, (_, i) => `<text:p text:style-name="s${19_999 - (i % 50)}">x</text:p>`).join("");
+    const started = Date.now();
+    limitExceeded(() => readOdt(odt(withStyles(chain(20_000), paragraphs))));
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("12 a chain at the depth cap reads, and a loop in the parents stops", () => {
+    expect(readOdt(odt(withStyles(chain(50), `<text:p text:style-name="s49">x</text:p>`))).model.blocks).toHaveLength(1);
+    const loop = `<style:style style:name="a" style:parent-style-name="b"/><style:style style:name="b" style:parent-style-name="a"/>`;
+    expect(readOdt(odt(withStyles(loop, `<text:p text:style-name="a">x</text:p>`))).model.blocks).toHaveLength(1);
+  });
+
+  test("12 a style named like a key of Object.prototype reads as plain text", () => {
+    const names = ["constructor", "toString", "hasOwnProperty", "__proto__"];
+    const styles = names.map((n) => `<style:style style:name="${n}"/>`).join("");
+    const body = names.map((n) => `<text:p text:style-name="${n}">x<text:span text:style-name="${n}">y</text:span></text:p>`).join("");
+    const read = readOdt(odt(withStyles(styles, body)));
+    expect(read.model.blocks).toHaveLength(4);
+    expect(readOdt(odt(wrap(`<text:p text:style-name="constructor">x</text:p>`))).model.blocks).toHaveLength(1);
   });
 });
 

@@ -164,7 +164,7 @@ export function writeOdt(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
 // ---------- read ----------
 
 const SPACE = "\u0001"; // a space that came from <text:s>, kept through trimming
-const NAMED_MARKS: Record<string, Mark[]> = { Source_20_Text: ["code"], Strong_20_Emphasis: ["bold"], Emphasis: ["italic"] };
+const NAMED_MARKS = new Map<string, Mark[]>([["Source_20_Text", ["code"]], ["Strong_20_Emphasis", ["bold"]], ["Emphasis", ["italic"]]]);
 const IGNORED = /^(text:(sequence-decls|variable-decls|user-field-decls|tracked-changes|soft-page-break|bookmark|bookmark-start|bookmark-end|index-title|toc-mark.*)|office:forms|text:note-citation)$/;
 /** A repeat count above this is a hostile or broken file, not a table. */
 const MAX_REPEAT = 1000;
@@ -203,7 +203,7 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   const collect = (el: XmlElement, auto: boolean): void => {
     const name = el.attrs["style:name"];
     if (el.name === "style:style" && name) {
-      const marks = [...(NAMED_MARKS[name] ?? []), ...marksOfProps(childOf(el, "style:text-properties")?.attrs ?? {})];
+      const marks = [...(NAMED_MARKS.get(name) ?? []), ...marksOfProps(childOf(el, "style:text-properties")?.attrs ?? {})];
       styles.set(name, { parent: el.attrs["style:parent-style-name"], marks, auto });
     } else if (el.name === "text:list-style" && name) listStyles.set(name, el);
     for (const k of elementsOf(el)) collect(k, auto || k.name === "office:automatic-styles");
@@ -211,12 +211,18 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   collect(content, false);
   if (stylesPart) collect(stylesPart, false);
 
+  /** A style and its parents, nearest first. A loop ends the walk; a chain past `maxStyleDepth` rejects the file. */
   const chain = (name?: string): string[] => {
     const names: string[] = [];
-    for (let n = name; n && !names.includes(n); n = styles.get(n)?.parent) names.push(n);
+    const seen = new Set<string>();
+    for (let n = name; n && !seen.has(n); n = styles.get(n)?.parent) {
+      if (names.length >= caps.maxStyleDepth) throw new FormatError("LIMIT_EXCEEDED", `a style has more than ${caps.maxStyleDepth} parents`);
+      names.push(n);
+      seen.add(n);
+    }
     return names;
   };
-  const marksOf = (name?: string): Mark[] => chain(name).flatMap((n) => styles.get(n)?.marks ?? NAMED_MARKS[n] ?? []);
+  const marksOf = (name?: string): Mark[] => chain(name).flatMap((n) => styles.get(n)?.marks ?? NAMED_MARKS.get(n) ?? []);
   const paragraphMarks = (name?: string): Mark[] => chain(name).flatMap((n) => (styles.get(n)?.auto ? styles.get(n)!.marks : []));
   const isOrdered = (styleName: string | undefined, depth: number, inherited: boolean): boolean => {
     const style = styleName ? listStyles.get(styleName) : undefined;
@@ -321,22 +327,43 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     return n;
   };
 
+  /** Table cells so far, each repeat counted in full, so a few repeat counts cannot grow into billions of cells. */
+  let tableCells = 0;
+  const chargeCells = (n: number): void => {
+    tableCells += n;
+    if (tableCells > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the tables in the file have more than ${caps.maxCells} cells`);
+  };
+
   function tableOf(el: XmlElement): Table | undefined {
     const rows: Block[][][] = [];
     let header = false;
     const walk = (parent: XmlElement, inHeader: boolean): void => {
       for (const k of elementsOf(parent)) {
         if (k.name === "table:table-row") {
-          const cells = elementsOf(k).flatMap((c): Block[][] => {
-            if (c.name !== "table:table-cell" && c.name !== "table:covered-table-cell") return [];
+          // Read the cells, then charge the whole row (repeats and nested tables included) before any copy is made.
+          const read: { blocks: Block[]; count: number }[] = [];
+          let perRow = 0;
+          let charged = 0;
+          for (const c of elementsOf(k)) {
+            if (c.name !== "table:table-cell" && c.name !== "table:covered-table-cell") continue;
             if (c.name === "table:covered-table-cell" || c.attrs["table:number-columns-spanned"] || c.attrs["table:number-rows-spanned"]) warnings.add("merged table cells were read as single cells");
+            const before = tableCells;
             const blocks = blocksOf(c, 0, false);
+            const inner = tableCells - before;
+            const count = repeat(c, "table:number-columns-repeated");
+            charged += inner;
+            perRow += count * (1 + inner);
+            read.push({ blocks, count });
+          }
+          const rowRepeat = repeat(k, "table:number-rows-repeated");
+          chargeCells(Math.max(perRow, 1) * rowRepeat - charged);
+          const cells = read.flatMap(({ blocks, count }): Block[][] => {
             const empty = blocks.length === 1 && blocks[0].type === "paragraph" && blocks[0].content.length === 0;
-            return Array.from({ length: repeat(c, "table:number-columns-repeated") }, () => (empty ? [] : blocks));
+            return Array.from({ length: count }, () => (empty ? [] : blocks));
           });
           if (inHeader && rows.length === 0) header = true;
           else if (inHeader) warnings.add("only the first header row of a table was kept as a header");
-          for (let i = repeat(k, "table:number-rows-repeated"); i > 0; i--) rows.push(cells);
+          for (let i = rowRepeat; i > 0; i--) rows.push(cells);
         } else if (/^table:(table-header-rows|table-rows|table-row-group)$/.test(k.name)) walk(k, inHeader || k.name === "table:table-header-rows");
       }
     };
