@@ -517,5 +517,16 @@ describe("PDF writer, review round 4", () => {
     const tall = { type: "paragraph" as const, content: [{ type: "image" as const, data: PNG, mime: "image/png" as const, width: 300, height: 2000 }] };
     expect(writePdf({ blocks: [{ type: "table", rows: [[[tall]]] }] }).warnings).toEqual([]);
   });
+
+  test("5 blocks dropped behind blank space in a cell are reported", () => {
+    const cell = [...Array.from({ length: 30 }, (_, i) => para(`row ${i}`)), ...Array.from({ length: 8 }, () => ({ type: "list" as const, ordered: false, items: [] })), para("LOSTWORD")];
+    const { warnings, bytes } = writePdf({ blocks: [{ type: "table", rows: [[cell]] }] });
+    expect(contentText(bytes)).not.toContain("LOSTWORD");
+    expect(warnings).toContain("a table row taller than a page was cut to fit");
+  });
+
+  test("2 a lone surrogate in a title is replaced", () => {
+    expect(latin(writePdf({ title: "a\ud800b", blocks: [] }).bytes)).toContain("/Title <FEFF0061fffd0062>");
+  });
 });
 

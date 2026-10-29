@@ -275,7 +275,7 @@ class Pdf {
     this.set(catalog, `<</Type /Catalog /Pages ${tree} 0 R>>`);
     // Take 501 code points with a bounded loop: a title can be as long as the text limit allows.
     const head: string[] = [];
-    if (title) for (const ch of title) if (head.push(ch) > 500) break;
+    if (title) for (const ch of title) if (head.push(/[\ud800-\udfff]/.test(ch) && ch.length === 1 ? "\ufffd" : ch) > 500) break;
     if (head.length > 500) this.warnings.add("the title was cut to 500 characters");
     const titleHex = title ? `/Title <FEFF${head.slice(0, 500).map((c) => c.codePointAt(0)!).flatMap((cp) => (cp > 0xffff ? [0xd800 + ((cp - 0x10000) >> 10), 0xdc00 + ((cp - 0x10000) & 0x3ff)] : [cp])).map((u) => u.toString(16).padStart(4, "0")).join("")}> ` : "";
     this.set(info, `<<${titleHex}/Producer (agentic-formats) /CreationDate (D:20000101000000Z)>>`);
@@ -709,7 +709,10 @@ function flow(ctx: Ctx, blocks: Block[], width: number, dx: number, bold = false
   for (const block of blocks) {
     // In a cell, what goes past a page is cut when the row is drawn, so it is not laid out.
     if (ctx.depth > 0) {
-      if (height > CONTENT_H) break;
+      if (height > CONTENT_H) {
+        ctx.pdf.warnings.add("a table row taller than a page was cut to fit");
+        break;
+      }
       height = items.reduce((n, i) => n + i.h, 0);
     }
     if (block.type === "heading") {

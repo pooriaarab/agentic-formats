@@ -121,7 +121,7 @@ try {
 - Lengths in the models are in points. Every reader reads UTF-8 XML only.
 - PDF: the standard Helvetica and Courier faces, so a character outside Latin-1 and Windows
   punctuation is written as `?` and reported. No GIF images, speaker notes, or superscript, and a
-  table row taller than a page is cut. A heading can end a page, and a table header row is not repeated on the next page. The SDK writes PDF; the CLI and MCP tools do not yet.
+  table row taller than a page is cut. Footnotes are written as notes at the end of the document, not on the page that cites them. A heading can end a page, and a table header row is not repeated on the next page. The SDK writes PDF; the CLI and MCP tools do not yet.
 - A file is never partly read. A file that goes past a limit is rejected.
 
 ## Develop
