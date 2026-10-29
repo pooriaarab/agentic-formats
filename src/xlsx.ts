@@ -7,7 +7,7 @@ import { writeZip } from "./zip.js";
 
 const MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const SML = "application/vnd.openxmlformats-officedocument.spreadsheetml";
-const BUILTIN_FORMATS: Record<string, number> = { "0": 1, "0.00": 2, "#,##0": 3, "#,##0.00": 4, "0%": 9, "0.00%": 10 };
+const BUILTIN_FORMATS = new Map([["0", 1], ["0.00", 2], ["#,##0", 3], ["#,##0.00", 4], ["0%", 9], ["0.00%", 10]]);
 
 // ---------- write ----------
 
@@ -65,8 +65,8 @@ export function writeXlsx(book: Workbook, limits?: Partial<Limits>): WriteResult
   });
   let custom = 164;
   const xfs = formats.map((format) => {
-    const id = BUILTIN_FORMATS[format] ?? custom++;
-    return { id, format, builtin: format in BUILTIN_FORMATS };
+    const id = BUILTIN_FORMATS.get(format) ?? custom++;
+    return { id, format, builtin: BUILTIN_FORMATS.has(format) };
   });
   const numFmts = xfs.filter((x) => !x.builtin);
   const styles =

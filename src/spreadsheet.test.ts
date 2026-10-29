@@ -132,6 +132,8 @@ describe.each(formats)("%s: write then read", (format) => {
     for (const ref of ["A0", "a1", "AAAA1", "1A", "XFE1", "A1048577", "A01"]) refuse(sheet("S", { [ref]: { value: 1 } }));
     for (const value of [Number.NaN, Infinity, -Infinity]) refuse(sheet("S", { A1: { value } }));
     refuse(sheet("S", { A1: { value: 1 }, A2: { value: 2 } }), { maxCells: 1 });
+    for (const cell of [{ value: 1, format: 123 }, { value: {} }, { value: [1] }, null, 7]) refuse(sheet("S", { A1: cell as never }));
+    expect(() => write(sheet("S", { A1: { value: 1, format: "constructor" } }))).not.toThrow();
   });
 
   test("11 a model whose cells share one big string is refused before any output is built", () => {
@@ -199,6 +201,13 @@ describe("xlsx package", () => {
     const styles = strFromU8(unzipSync(writeXlsx(fixture).bytes)["xl/styles.xml"]);
     expect(styles).toContain('<numFmt numFmtId="164" formatCode="yyyy-mm-dd"/>');
     for (const id of [1, 2, 3, 4, 9, 10]) expect(styles).toContain(`<xf numFmtId="${id}"`);
+  });
+
+  test("3 a format code that names a key of Object.prototype writes a valid styles part", () => {
+    const styles = strFromU8(unzipSync(writeXlsx(sheet("S", { A1: { value: 1, format: "constructor" } })).bytes)["xl/styles.xml"]);
+    expect(styles).toContain('formatCode="constructor"');
+    expect(styles).not.toContain("native code");
+    wellFormed(styles);
   });
 
   test("3 any format code is kept as written", () => {

@@ -43,6 +43,9 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
     names.add(name.toLowerCase());
     for (const [ref, cell] of Object.entries(sheet.cells)) {
       if (!parseRef(ref)) bad(`"${ref}" is not a cell reference on the sheet grid`);
+      if (typeof cell !== "object" || cell === null) bad(`${sheet.name}!${ref} is not a cell`);
+      if (cell.value !== undefined && !["string", "number", "boolean"].includes(typeof cell.value)) bad(`${sheet.name}!${ref} holds a value that is not a string, a number, or a boolean`);
+      if (cell.format !== undefined && typeof cell.format !== "string") bad(`${sheet.name}!${ref} holds a number format that is not a string`);
       if (++cells > limits.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${limits.maxCells} cells`);
       if (typeof cell.value === "number" && !Number.isFinite(cell.value)) bad(`${sheet.name}!${ref} holds a number that is not finite`);
       if (cell.formula !== undefined && (typeof cell.formula !== "string" || cell.formula.length > MAX_FORMULA)) bad(`${sheet.name}!${ref} holds a formula that is not usable`);
