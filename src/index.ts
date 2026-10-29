@@ -45,5 +45,6 @@ export { isoToSerial, serialToIso } from "./spreadsheet.js";
 export { readDocx, writeDocx } from "./docx.js";
 export { ODP_MIME, readOdp, writeOdp } from "./odp.js";
 export { readPptx, writePptx } from "./pptx.js";
+export { writePdf } from "./pdf.js";
 export { FORMATS, convert, formatOfName, inspect, load, modelJson } from "./convert.js";
 export type { Conversion, Format, Kind, Loaded } from "./convert.js";
