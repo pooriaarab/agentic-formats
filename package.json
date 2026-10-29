@@ -1,6 +1,6 @@
 {
   "name": "agentic-formats",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.",
   "keywords": [
     "odf",
