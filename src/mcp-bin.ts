@@ -20,15 +20,17 @@ Flags:
   --help, -h       Print this help and exit.
   --version, -V    Print the version and exit.`;
 
+const KNOWN_ARGS = ["--help", "-h", "--version", "-V"];
 const args = process.argv.slice(2);
+const unknown = args.find((arg) => !KNOWN_ARGS.includes(arg));
 
-if (args.includes("--help") || args.includes("-h")) {
+if (unknown !== undefined) {
+  console.error(`agentic-formats-mcp: unknown argument "${unknown}". Run with --help to see the options.`);
+  process.exit(2);
+} else if (args.includes("--help") || args.includes("-h")) {
   console.log(HELP);
 } else if (args.includes("--version") || args.includes("-V")) {
   console.log(VERSION);
-} else if (args.length > 0) {
-  console.error(`agentic-formats-mcp: unknown argument "${args[0]}". Run with --help to see the options.`);
-  process.exit(2);
 } else {
   startMcpFromEnv().catch((error: unknown) => {
     console.error(describeError(error) ?? (error instanceof Error ? error.message : String(error)));

@@ -27,6 +27,12 @@ describe("built package", () => {
     expect(ver.error).toBeUndefined();
     expect(ver.status).toBe(0);
     expect(ver.stdout.trim()).toBe(version);
+    for (const flag of ["-h", "-V"]) {
+      const short = spawnSync("node", [bin, flag], { encoding: "utf8", timeout: 5000 });
+      expect(short.error).toBeUndefined();
+      expect(short.status).toBe(0);
+      expect(short.stdout).toContain(flag === "-h" ? "Usage: agentic-formats-mcp" : version);
+    }
   });
 
   test("the MCP bin reports a bad environment in one line, not a stack trace, and refuses an unknown flag", () => {
@@ -40,6 +46,9 @@ describe("built package", () => {
     expect(flag.error).toBeUndefined();
     expect(flag.status).toBe(2);
     expect(flag.stderr).toContain('unknown argument "--hlep"');
+    const mixed = spawnSync("node", [bin, "--bogus", "--help"], { encoding: "utf8", timeout: 5000 });
+    expect(mixed.status).toBe(2);
+    expect(mixed.stdout).toBe("");
   });
 
   test("the MCP server starts over stdio", async () => {
