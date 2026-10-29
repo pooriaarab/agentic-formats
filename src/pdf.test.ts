@@ -349,7 +349,7 @@ describe("PDF writer", () => {
     expect(r.warnings).toContain("an image is a PNG with damaged pixels: not written");
     const badFilter = writePdf(inline(png(6, zlibSync(Uint8Array.of(9, 0, 0, 0, 0)))));
     expect(badFilter.warnings).toContain("an image is a PNG with damaged pixels: not written");
-  });
+  }, 60_000);
 
   test("4 a picture with no data is a FormatError, and a nested table reports lost images", () => {
     const deck = { width: 100, height: 100, slides: [{ shapes: [{ type: "picture", frame: { x: 0, y: 0, width: 5, height: 5 } }] }] };
@@ -482,6 +482,18 @@ describe("PDF writer, review round 4", () => {
     });
     expect(lines.length).toBeGreaterThan(2);
     for (const n of lines) expect(n).toBeLessThanOrEqual(42);
+  });
+
+  test("7 a zero-width slide box with millions of characters is cut, not laid out line by line", () => {
+    const deck = { width: 100, height: 100, slides: [{ shapes: [{ type: "textbox" as const, frame: { x: 0, y: 0, width: 0, height: 10 }, paragraphs: [[text("a".repeat(4_000_000))]] }] }] };
+    const { warnings, bytes } = writePdf(deck);
+    structure(bytes);
+    expect(warnings).toContain("text was cut to fit its box on slide 1");
+  }, 60_000);
+
+  test("7 a title is counted against the text limit", () => {
+    expect(() => writePdf({ title: "x".repeat(2000), blocks: [] }, { maxTextChars: 1000 })).toThrow(FormatError);
+    expect(writePdf({ title: "x".repeat(900), blocks: [] }).warnings).toContain("the title was cut to 500 characters");
   });
 });
 

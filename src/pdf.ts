@@ -272,8 +272,11 @@ class Pdf {
     });
     this.set(tree, `<</Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(" ")}] /Count ${pageIds.length}>>`);
     this.set(catalog, `<</Type /Catalog /Pages ${tree} 0 R>>`);
-    if (title && [...title].length > 500) this.warnings.add("the title was cut to 500 characters");
-    const titleHex = title ? `/Title <FEFF${[...title].slice(0, 500).map((c) => c.codePointAt(0)!).flatMap((cp) => (cp > 0xffff ? [0xd800 + ((cp - 0x10000) >> 10), 0xdc00 + ((cp - 0x10000) & 0x3ff)] : [cp])).map((u) => u.toString(16).padStart(4, "0")).join("")}> ` : "";
+    // Take 501 code points with a bounded loop: a title can be as long as the text limit allows.
+    const head: string[] = [];
+    if (title) for (const ch of title) if (head.push(ch) > 500) break;
+    if (head.length > 500) this.warnings.add("the title was cut to 500 characters");
+    const titleHex = title ? `/Title <FEFF${head.slice(0, 500).map((c) => c.codePointAt(0)!).flatMap((cp) => (cp > 0xffff ? [0xd800 + ((cp - 0x10000) >> 10), 0xdc00 + ((cp - 0x10000) & 0x3ff)] : [cp])).map((u) => u.toString(16).padStart(4, "0")).join("")}> ` : "";
     this.set(info, `<<${titleHex}/Producer (agentic-formats) /CreationDate (D:20000101000000Z)>>`);
 
     const chunks: Uint8Array[] = [latin1("%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")];
@@ -403,6 +406,7 @@ function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): 
   let used = 0;
   // Spaces are kept at the start of the text and after a hard break, so indented lines keep their indent.
   let keepSpaces = true;
+  let full = false;
   const push = (text: string, a: Atom, w: number): void => {
     const last = line[line.length - 1];
     if (last && sameStyle(last, a)) {
@@ -412,12 +416,8 @@ function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): 
     used += w;
   };
   const wrapAt = (): void => {
-    if (lines.length >= maxLines) {
-      // Stop growing: the rest could never be drawn, and a narrow box must not make a line for each character.
-      line = [];
-      used = 0;
-      return;
-    }
+    // Stop at the cap: the rest could never be drawn, and a narrow box must not make a line for each character.
+    if (lines.length >= maxLines) full = true;
     lines.push(line);
     line = [];
     used = 0;
@@ -436,6 +436,7 @@ function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): 
     else {
       for (const p of word) {
         for (const c of p.text) {
+          if (full) break;
           const cw = widthOf(c, p.atom.face);
           if (used > 0 && used + cw > w) wrapAt();
           push(c, p.atom, cw);
@@ -445,6 +446,7 @@ function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): 
     word = [];
   };
   for (const a of atoms) {
+    if (full) break;
     if (a.text === "\n") {
       place();
       wrapAt();
@@ -452,6 +454,7 @@ function wrap(atoms: Atom[], size: number, width: number, maxLines = Infinity): 
       continue;
     }
     for (const token of a.text.match(/ +|[^ ]+/g) ?? []) {
+      if (full) break;
       const tw = widthOf(token, a.face);
       if (token[0] !== " ") {
         word.push({ text: token, atom: a, w: tw });
@@ -516,7 +519,7 @@ function writeDeck(deck: Deck, pdf: Pdf): void {
         let size = 18;
         let lines: Line[] = [];
         for (; size >= 8; size--) {
-          lines = atoms.flatMap((a) => wrap(a, size, width));
+          lines = atoms.flatMap((a) => wrap(a, size, width, Math.floor((height + 0.01) / (size * 1.2)) + 1));
           if (lines.length * size * 1.2 <= height + 0.01) break;
         }
         size = Math.max(size, 8);
@@ -776,6 +779,7 @@ function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: n
 function writeText(doc: TextDoc, pdf: Pdf): void {
   checkBlocks(doc?.blocks, pdf.caps, 0, { n: 0, work: 0 });
   if (doc.title !== undefined && typeof doc.title !== "string") throw new FormatError("INVALID_MODEL", "the title of a document must be a string");
+  pdf.charge(doc.title?.length ?? 0);
   // The text is charged as it is encoded. Image bytes are not text: they count against the output size.
   if (textLength(doc.blocks) > pdf.caps.maxTextChars + pdf.caps.maxTotalBytes) throw new FormatError("LIMIT_EXCEEDED", "the document is larger than the limits allow");
   const ctx: Ctx = { pdf, notes: [], depth: 0 };
