@@ -3,6 +3,7 @@ import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import {
   MARKS,
   normalizeInline,
+  mergeMarks,
   normalizeTextDoc,
   textLength,
   type Block,
@@ -63,6 +64,10 @@ interface Out {
   tables: number;
   notes: number;
   warnings: Set<string>;
+  /** Counts the text of each run and the length of each link as it is written, so a model that holds one string many times stops at the cap. */
+  charge: (chars: number) => void;
+  /** Counts the XML as each piece is made, so a model that holds one object many times fails before one string grows past the cap. */
+  bytes: (length: number) => void;
 }
 
 function imageXml(node: InlineImage, out: Out): string {
@@ -80,6 +85,7 @@ function imageXml(node: InlineImage, out: Out): string {
 }
 
 function runXml(run: TextRun, out: Out): string {
+  out.charge(run.text.length + (run.href?.length ?? 0));
   let xml = spaced(run.text);
   const marks = MARKS.filter((m) => run.marks?.includes(m));
   if (marks.length) {
@@ -98,18 +104,22 @@ function runXml(run: TextRun, out: Out): string {
 function inlineXml(nodes: Inline[], out: Out): string {
   return nodes
     .map((node) => {
-      switch (node.type) {
-        case "text":
-          return runXml(node, out);
-        case "break":
-          return "<text:line-break/>";
-        case "image":
-          return imageXml(node, out);
-        case "footnote": {
-          const n = ++out.notes;
-          return `<text:note text:id="ftn${n}" text:note-class="footnote"><text:note-citation>${n}</text:note-citation><text:note-body><text:p text:style-name="Footnote">${inlineXml(node.content, out)}</text:p></text:note-body></text:note>`;
+      const xml = ((): string => {
+        switch (node.type) {
+          case "text":
+            return runXml(node, out);
+          case "break":
+            return "<text:line-break/>";
+          case "image":
+            return imageXml(node, out);
+          case "footnote": {
+            const n = ++out.notes;
+            return `<text:note text:id="ftn${n}" text:note-class="footnote"><text:note-citation>${n}</text:note-citation><text:note-body><text:p text:style-name="Footnote">${inlineXml(node.content, out)}</text:p></text:note-body></text:note>`;
+          }
         }
-      }
+      })();
+      out.bytes(xml.length);
+      return xml;
     })
     .join("");
 }
@@ -132,6 +142,12 @@ function tableXml(table: Table, out: Out): string {
 }
 
 function blockXml(block: Block, out: Out): string {
+  const xml = blockXmlOf(block, out);
+  out.bytes(xml.length);
+  return xml;
+}
+
+function blockXmlOf(block: Block, out: Out): string {
   switch (block.type) {
     case "paragraph":
       return `<text:p text:style-name="Standard">${inlineXml(block.content, out)}</text:p>`;
@@ -149,7 +165,15 @@ function blockXml(block: Block, out: Out): string {
 /** Write a document as an OpenDocument text file (.odt). */
 export function writeOdt(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
   const caps = withLimits(limits);
-  const out: Out = { images: [], spans: new Map(), tables: 0, notes: 0, warnings: new Set() };
+  const out: Out = {
+    images: [],
+    spans: new Map(),
+    tables: 0,
+    notes: 0,
+    warnings: new Set(),
+    charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`),
+    bytes: capped(caps.maxTotalBytes, `the document passes ${caps.maxTotalBytes} bytes while it is written`),
+  };
   const body = doc.blocks.map((b) => blockXml(b, out)).join("\n");
   const spanStyles = [...out.spans].map(
     ([key, name]) => `<style:style style:name="${name}" style:family="text"><style:text-properties ${key.split(",").map((m) => MARK_PROPS[m as Mark]).join(" ")}/></style:style>`,
@@ -169,6 +193,8 @@ const NAMED_MARKS = new Map<string, Mark[]>([["Source_20_Text", ["code"]], ["Str
 const IGNORED = /^(text:(sequence-decls|variable-decls|user-field-decls|tracked-changes|soft-page-break|bookmark|bookmark-start|bookmark-end|index-title|toc-mark.*)|office:forms|text:note-citation)$/;
 /** A repeat count above this is a hostile or broken file, not a table. */
 const MAX_REPEAT = 1000;
+/** A `<text:s>` element stands for this many spaces at most. */
+const MAX_SPACES = 1000;
 
 interface StyleInfo {
   parent?: string;
@@ -223,8 +249,8 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     }
     return names;
   };
-  const marksOf = (name?: string): Mark[] => chain(name).flatMap((n) => styles.get(n)?.marks ?? NAMED_MARKS.get(n) ?? []);
-  const paragraphMarks = (name?: string): Mark[] => chain(name).flatMap((n) => (styles.get(n)?.auto ? styles.get(n)!.marks : []));
+  const marksOf = (name?: string): Mark[] => mergeMarks(chain(name).flatMap((n) => styles.get(n)?.marks ?? NAMED_MARKS.get(n) ?? []), []);
+  const paragraphMarks = (name?: string): Mark[] => mergeMarks(chain(name).flatMap((n) => (styles.get(n)?.auto ? styles.get(n)!.marks : [])), []);
   const isOrdered = (styleName: string | undefined, depth: number, inherited: boolean): boolean => {
     const style = styleName ? listStyles.get(styleName) : undefined;
     if (!style) return inherited;
@@ -235,6 +261,9 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
 
   const warnings = new Set<string>();
   const warn = (what: string) => warnings.add(`${what}: not imported`);
+  // A few bytes of `<text:s text:c="1000"/>` stand for a thousand spaces, and an image part is shared by every frame that names it.
+  const chargeSpaces = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} spaces in <text:s> elements`);
+  const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
   const run = (value: string, marks: Mark[], href?: string): TextRun => ({ type: "text", text: value, ...(marks.length ? { marks } : {}), ...(href ? { href } : {}) });
 
   function frame(el: XmlElement): Inline[] {
@@ -247,6 +276,7 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
       warnings.add(/^[a-z][a-z0-9+.-]*:/i.test(href) ? "a remote image: not loaded" : "an image that is not a PNG, JPEG, or GIF: not imported");
       return [];
     }
+    chargeImages(data.length);
     const alt = textOf(childOf(el, "svg:title")).trim() || textOf(childOf(el, "svg:desc")).trim();
     const width = lengthPt(el.attrs["svg:width"]);
     const height = lengthPt(el.attrs["svg:height"]);
@@ -260,14 +290,19 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
         return value ? [run(value, marks, href)] : [];
       }
       switch (c.name) {
-        case "text:s":
-          return [run(SPACE.repeat(Math.max(1, Math.min(1000, Number(c.attrs["text:c"] ?? 1)) || 1)), marks, href)];
+        case "text:s": {
+          const asked = Number(c.attrs["text:c"] ?? 1) || 1;
+          if (asked > MAX_SPACES) warnings.add(`a run of more than ${MAX_SPACES} spaces was shortened`);
+          const count = Math.max(1, Math.min(MAX_SPACES, asked));
+          chargeSpaces(count);
+          return [run(SPACE.repeat(count), marks, href)];
+        }
         case "text:tab":
           return [run("\t", marks, href)];
         case "text:line-break":
           return [{ type: "break" }];
         case "text:span":
-          return inline(c, [...marks, ...marksOf(c.attrs["text:style-name"])], href);
+          return inline(c, mergeMarks(marks, marksOf(c.attrs["text:style-name"])), href);
         case "text:a": {
           const target = safeHref(c.attrs["xlink:href"]);
           if (!target) warnings.add("a link with an unsafe target was read as plain text");

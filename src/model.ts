@@ -81,12 +81,16 @@ export interface TextDoc {
   blocks: Block[];
 }
 
-const inlineKey = (run: TextRun): string => JSON.stringify([run.marks, run.href]);
+/** Two runs read the same when their marks and their link are equal. Compares in place: a link may be megabytes long. */
+const sameStyle = (a: TextRun, b: TextRun): boolean => a.href === b.href && (a.marks?.join() ?? "") === (b.marks?.join() ?? "");
+
+/** The marks of `a` and `b` together, each once, in the canonical order. Seven entries at most, however many styles a file stacks. */
+export const mergeMarks = (a: readonly Mark[], b: readonly Mark[]): Mark[] => MARKS.filter((m) => a.includes(m) || b.includes(m));
 
 const inlineLength = (content: Inline[]): number =>
-  content.reduce((n, node) => n + (node.type === "text" ? node.text.length : node.type === "footnote" ? inlineLength(node.content) : 1), 0);
+  content.reduce((n, node) => n + (node.type === "text" ? node.text.length : node.type === "footnote" ? inlineLength(node.content) : node.type === "image" ? node.data.length : 1), 0);
 
-/** Characters of text in blocks, counted as they are laid out: a row that appears twice counts twice. */
+/** Characters of text in blocks, and bytes of images, counted as they are laid out: a row that appears twice counts twice. */
 export function textLength(blocks: Block[]): number {
   return blocks.reduce((n, block) => {
     if (block.type === "table") return n + block.rows.reduce((m, row) => m + row.reduce((k, cell) => k + textLength(cell), 0), 0);
@@ -110,7 +114,7 @@ export function normalizeInline(content: Inline[]): Inline[] {
     const marks = MARKS.filter((m) => node.marks?.includes(m));
     const run: TextRun = { type: "text", text: node.text, ...(marks.length ? { marks } : {}), ...(node.href ? { href: node.href } : {}) };
     const prev = out[out.length - 1];
-    if (prev?.type === "text" && inlineKey(prev) === inlineKey(run)) prev.text += run.text;
+    if (prev?.type === "text" && sameStyle(prev, run)) prev.text += run.text;
     else out.push(run);
   }
   return out;

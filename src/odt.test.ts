@@ -16,12 +16,14 @@
  * 11 a table makes billions of cells from a few repeat counts (rows x cells x repeats, over many tables)
  * 12 a style parent chain is long, loops, or names a key of Object.prototype
  * 13 one big paragraph in a repeated table cell fills the output once for each copy
+ * 14 a few bytes of <text:s> expand to millions of spaces; nested spans stack the same marks again
+ *    and again; one image part named by many frames; a writer holds one object many times
  */
 import { DOMParser } from "@xmldom/xmldom";
 import { strFromU8, unzipSync } from "fflate";
 import { afterAll, describe, expect, test } from "vitest";
 import { FormatError } from "./limits.js";
-import { normalizeTextDoc, type TextDoc } from "./model.js";
+import { normalizeTextDoc, type Block, type TextDoc } from "./model.js";
 import { readOdt, writeOdt } from "./odt.js";
 import { LibreOffice, hasLibreOffice, libreOfficeRequired, sha256, writeArtifact, type RoundTripRecord } from "./testing/libreoffice.js";
 import { writeZip } from "./zip.js";
@@ -234,7 +236,9 @@ describe("hostile files", () => {
   test("11 a nested table counts against the same budget", () => {
     const inner = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="10"><table:table-cell table:number-columns-repeated="10"/></table:table-row></table:table>`;
     const nested = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="10"><table:table-cell table:number-columns-repeated="10">${inner}</table:table-cell></table:table-row></table:table>`;
-    limitExceeded(() => readOdt(odt(wrap(nested)), withLimits({ maxCells: 150 })));
+    // 100 cells in the inner table, then 10 x 10 copies of it: 100 + 10,000. A budget of 300 rejects only a reader that multiplies by the outer repeats.
+    limitExceeded(() => readOdt(odt(wrap(nested)), withLimits({ maxCells: 300 })));
+    expect(readOdt(odt(wrap(nested)), withLimits({ maxCells: 10_100 })).model.blocks).toHaveLength(1);
   });
 
   test("13 a big paragraph in a repeated cell or row counts once for each copy", () => {
@@ -245,6 +249,54 @@ describe("hostile files", () => {
     limitExceeded(() => readOdt(odt(wrap(row('table:number-columns-repeated="3"'))), caps));
     limitExceeded(() => readOdt(odt(wrap(row("", 'table:number-rows-repeated="3"'))), caps));
     limitExceeded(() => readOdt(odt(wrap(row('table:number-columns-repeated="1000"', 'table:number-rows-repeated="1000"'))), caps));
+  });
+
+  test("14 text:s runs count against the text cap, and a long run is shortened with a warning", () => {
+    const spaces = (n: number, c: number) => `<text:p>a${`<text:s text:c="${c}"/>`.repeat(n)}b</text:p>`;
+    const caps = withLimits({ maxTextChars: 10_000 });
+    expect(readOdt(odt(wrap(spaces(9, 1000))), caps).model.blocks).toHaveLength(1);
+    limitExceeded(() => readOdt(odt(wrap(spaces(11, 1000))), caps));
+    const shortened = readOdt(odt(wrap(spaces(1, 5000))));
+    expect(shortened.warnings).toEqual(["a run of more than 1000 spaces was shortened"]);
+    const started = Date.now();
+    limitExceeded(() => readOdt(odt(wrap(spaces(200_000, 1000)))));
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  test("14 nested spans with a long style chain keep seven marks at most", () => {
+    const marks = `<style:text-properties fo:font-weight="bold" fo:font-style="italic" style:text-underline-style="solid" style:text-line-through-style="solid" fo:font-family="monospace" style:text-position="super 58%" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"/>`;
+    const styles = Array.from({ length: 50 }, (_, i) => `<style:style style:name="m${i}"${i ? ` style:parent-style-name="m${i - 1}"` : ""}>${marks}</style:style>`).join("");
+    const spans = `<text:span text:style-name="m49">`.repeat(60) + "x" + "</text:span>".repeat(60);
+    const started = Date.now();
+    const read = readOdt(odt(withStyles(styles, `<text:p>${spans}</text:p>`)));
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(read.model.blocks).toEqual([{ type: "paragraph", content: [{ type: "text", text: "x", marks: ["bold", "italic", "underline", "strike", "code", "superscript"] }] }]);
+  });
+
+  test("14 one image part named by many frames counts its bytes for each frame", () => {
+    const frame = `<draw:frame><draw:image xlink:href="Pictures/a.png"/></draw:frame>`;
+    const body = wrap(`<text:p>${frame.repeat(5)}</text:p>`);
+    const padded = new Uint8Array(10_000);
+    padded.set(PNG);
+    const picture = [{ name: "Pictures/a.png", data: padded }];
+    // The zip holds the image once (about 11,000 bytes); five frames name it, so the reader counts 50,000.
+    expect(readOdt(odt(body, "application/vnd.oasis.opendocument.text", picture), withLimits({ maxTotalBytes: 60_000 })).model.blocks).toHaveLength(1);
+    limitExceeded(() => readOdt(odt(body, "application/vnd.oasis.opendocument.text", picture), withLimits({ maxTotalBytes: 40_000 })));
+  });
+
+  test("14 a writer stops at the byte cap when one object stands in many places", () => {
+    const row = Array.from({ length: 1000 }, () => [{ type: "paragraph" as const, content: [{ type: "text" as const, text: "x" }] }]);
+    const table = { type: "table" as const, rows: Array.from({ length: 2000 }, () => row) };
+    const started = Date.now();
+    limitExceeded(() => writeOdt({ blocks: [table] }, withLimits({ maxTotalBytes: 5_000_000 })));
+    expect(Date.now() - started).toBeLessThan(5000);
+    // Forty objects that stand for 2^40 tables: each level holds the level below twice.
+    const nest = (k: number): Block => {
+      if (k === 0) return { type: "paragraph", content: [{ type: "text", text: "x" }] };
+      const inner = nest(k - 1);
+      return { type: "table", rows: [[[inner], [inner]]] };
+    };
+    limitExceeded(() => writeOdt({ blocks: [nest(40)] }, withLimits({ maxTotalBytes: 1_000_000 })));
   });
 
   const STYLE_NS = `xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"`;
