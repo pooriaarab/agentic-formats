@@ -202,18 +202,45 @@ describe("slow files", () => {
     expect(notes.warnings).toEqual(["a notes page that two slides share: not imported"]);
   });
 
-  test("11 a run of newlines and a note of newlines are charged as the XML they become", { timeout: 60_000 }, () => {
-    const run = { type: "text" as const, text: "\n".repeat(1_000_000) };
-    const textbox = { type: "textbox" as const, frame, paragraphs: [Array.from({ length: 6 }, () => run)] };
-    const notes = "\n".repeat(1_000_000);
+  test("11 one run or one note of eight million newlines is refused before its XML is made, in both writers", { timeout: 60_000 }, () => {
+    const deck = (shape?: Deck["slides"][0]["shapes"][0], notes?: string): Deck => ({ width: 720, height: 405, slides: [{ shapes: shape ? [shape] : [], ...(notes ? { notes } : {}) }] });
+    const run = { type: "text" as const, text: "\n".repeat(8_000_000) };
     for (const write of [writePptx, writeOdp]) {
-      for (const deck of [
-        { width: 720, height: 405, slides: [{ shapes: [textbox] }] },
-        { width: 720, height: 405, slides: Array.from({ length: 6 }, () => ({ shapes: [], notes })) },
-      ]) {
-        expect(() => write(deck as Deck, { maxTotalBytes: 40_000_000 })).toThrow(/passes 40000000 bytes while it is written/);
+      for (const model of [deck({ type: "textbox", frame, paragraphs: [[run]] }), deck(undefined, "\n".repeat(8_000_000))]) {
+        const started = Date.now();
+        expect(() => write(model)).toThrow(/passes 104857600 bytes while it is written/);
+        expect(Date.now() - started).toBeLessThan(3000);
       }
     }
+  });
+
+  test("11 one empty linked run that a model holds millions of times writes no relationships", { timeout: 60_000 }, () => {
+    const empty = { type: "text" as const, text: "", href: "a" };
+    const model: Deck = { width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame, paragraphs: [Array.from({ length: 4_000_000 }, () => empty)] }] }] };
+    const started = Date.now();
+    expect(() => writePptx(model)).toThrow(/while it is written/);
+    expect(Date.now() - started).toBeLessThan(5000);
+    const linked = writePptx({ width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame, paragraphs: [[{ type: "text", text: "x", href: "#top" }, { type: "text", text: "", href: "https://example.org/e" }]] }] }] });
+    expect(linked.warnings).toEqual(["an in-page link was written as plain text"]);
+    expect(strFromU8(files(linked.bytes)["ppt/slides/_rels/slide1.xml.rels"])).not.toContain("example.org");
+  });
+
+  test("11 a model of the wrong shape is an INVALID_MODEL error, not a TypeError", () => {
+    const wrong = (slide: unknown) => ({ width: 720, height: 405, slides: [slide] }) as unknown as Deck;
+    const shape = (s: unknown) => wrong({ shapes: [s] });
+    for (const model of [wrong({}), wrong({ shapes: [], notes: 7 }), shape(null), shape({ type: "textbox", frame, paragraphs: "x" }), shape({ type: "textbox", frame, paragraphs: [[{ type: "text", text: 7 }]] }), shape({ type: "picture", frame, data: PNG, mime: "image/png", alt: 5 })]) {
+      for (const write of [writePptx, writeOdp]) expect(() => write(model)).toThrow(FormatError);
+    }
+  });
+
+  test("11 an ODP shape or deck size outside the bounds is not read", () => {
+    const odp = writeOdp({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
+    const wide = readOdp(patch(odp, "content.xml", (x) => x.replace('svg:width="3.528cm"', 'svg:width="-5cm"').replace(/svg:width="[^"]*"/, 'svg:width="-5cm"')));
+    expect(wide.model.slides[0].shapes[0]).toMatchObject({ frame: { x: 0, y: 0, width: 0, height: 0 } });
+    expect(wide.warnings).toEqual(["a shape with a position or size outside the slide bounds was placed at the top left corner"]);
+    const size = readOdp(patch(odp, "styles.xml", (x) => x.replace(/fo:page-width="[^"]*"/, 'fo:page-width="-10cm"')));
+    expect(size.model.width).toBe(720);
+    expect(size.warnings).toEqual(["the slide size was missing: 720 by 405 points assumed"]);
   });
 
   test("11 a size or position that is not a number, or is out of bounds, is not read from a PPTX", () => {

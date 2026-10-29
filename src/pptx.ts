@@ -1,4 +1,4 @@
-import { MAX_POINTS, checkDeck, tenth } from "./deck.js";
+import { MAX_POINTS, checkDeck, tenth, textBound } from "./deck.js";
 import { sniffImage } from "./image.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { MARKS, normalizeInline, type Deck, type Frame, type Inline, type Mark, type ReadResult, type Slide, type SlideShape, type TextRun, type WriteResult } from "./model.js";
@@ -57,12 +57,16 @@ interface SlideOut extends Out {
 }
 
 function runXml(run: TextRun, out: SlideOut): string {
+  // A newline grows to a tag of 41 characters, and each line gets a run of about 260. The worst case counts before the string exists.
+  out.bytes(textBound(run.text, 300) + (run.href === undefined || run.text === "" ? 0 : 200 + 6 * run.href.length));
   const marks = MARKS.filter((m) => run.marks?.includes(m));
   const attrs = `lang="en-US" sz="1800"${marks.includes("bold") ? ' b="1"' : ""}${marks.includes("italic") ? ' i="1"' : ""}${marks.includes("underline") ? ' u="sng"' : ""}${marks.includes("strike") ? ' strike="sngStrike"' : ""}${marks.includes("superscript") ? ' baseline="30000"' : marks.includes("subscript") ? ' baseline="-25000"' : ""}`;
   const href = run.href === undefined ? undefined : safeHref(run.href);
   if (run.href !== undefined && !href) out.warnings.add("a link with an unsafe target was written as plain text");
   let link = "";
-  if (href && !href.startsWith("#")) {
+  if (href?.startsWith("#") && run.text !== "") out.warnings.add("an in-page link was written as plain text");
+  // A run with no text writes nothing, so it gets no relationship either.
+  if (href && !href.startsWith("#") && run.text !== "") {
     const id = `rId${out.rels.length + 3}`; // rId1 is the layout, rId2 the notes
     out.rels.push({ id, type: "hyperlink", target: href, external: true });
     link = `<a:hlinkClick r:id="${id}"/>`;
@@ -73,8 +77,6 @@ function runXml(run: TextRun, out: SlideOut): string {
     .split(/(\n)/)
     .map((piece) => (piece === "\n" ? "<a:br><a:rPr lang=\"en-US\" sz=\"1800\"/></a:br>" : piece ? `<a:r><a:rPr ${attrs}>${code}${link}</a:rPr><a:t>${esc(piece)}</a:t></a:r>` : ""))
     .join("");
-  // A newline grows more than forty times, so each run counts before the next one is made.
-  out.bytes(xml.length);
   return xml;
 }
 
@@ -149,8 +151,8 @@ export function writePptx(deck: Deck, limits?: Partial<Limits>): WriteResult {
     entries.push({ name: `ppt/slides/_rels/slide${n}.xml.rels`, data: relsXml(rels) });
     overrides[`ppt/slides/slide${n}.xml`] = `${PML}.slide+xml`;
     if (slide.notes) {
+      chargeBytes(textBound(slide.notes, 80));
       const paragraphs = slide.notes.split("\n").map((line) => `<a:p>${line ? `<a:r><a:rPr lang="en-US"/><a:t>${esc(line)}</a:t></a:r>` : '<a:endParaRPr lang="en-US"/>'}</a:p>`).join("");
-      chargeBytes(paragraphs.length);
       entries.push({
         name: `ppt/notesSlides/notesSlide${n}.xml`,
         data:

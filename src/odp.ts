@@ -1,4 +1,4 @@
-import { checkDeck, tenth } from "./deck.js";
+import { MAX_POINTS, checkDeck, tenth, textBound } from "./deck.js";
 import { cm, lengthPt, sniffImage } from "./image.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { mergeMarks, normalizeInline, type Deck, type Frame, type Inline, type Mark, type ReadResult, type Slide, type SlideShape, type TextRun, type WriteResult } from "./model.js";
@@ -69,8 +69,8 @@ function shapeXmlOf(shape: SlideShape, out: Out): string {
 
 /** The paragraphs of a slide's notes, one for each line. A newline grows to a paragraph, so the XML counts as it is made. */
 function noteLines(notes: string, out: Out): string {
+  out.bytes(textBound(notes, 20));
   const xml = notes.split("\n").map((line) => `<text:p>${esc(line)}</text:p>`).join("");
-  out.bytes(xml.length);
   return xml;
 }
 
@@ -207,7 +207,14 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     }
     return 0;
   };
-  const frameOf = (el: XmlElement): Frame => ({ x: length(el, "svg:x"), y: length(el, "svg:y"), width: length(el, "svg:width"), height: length(el, "svg:height", "fo:min-height") });
+  const frameOf = (el: XmlElement): Frame => {
+    const frame = { x: length(el, "svg:x"), y: length(el, "svg:y"), width: length(el, "svg:width"), height: length(el, "svg:height", "fo:min-height") };
+    // A position or size past the bounds the writers enforce is not read.
+    const usable = [frame.x, frame.y].every((n) => Math.abs(n) <= MAX_POINTS) && [frame.width, frame.height].every((n) => n >= 0 && n <= MAX_POINTS);
+    if (usable) return frame;
+    warnings.add("a shape with a position or size outside the slide bounds was placed at the top left corner");
+    return { x: 0, y: 0, width: 0, height: 0 };
+  };
 
   function shapesOf(page: XmlElement): SlideShape[] {
     const out: SlideShape[] = [];
@@ -286,8 +293,9 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   const layoutProps = childOf(layout, "style:page-layout-properties");
   const width = lengthPt(layoutProps?.attrs["fo:page-width"]);
   const height = lengthPt(layoutProps?.attrs["fo:page-height"]);
-  if (!width || !height) warnings.add("the slide size was missing: 720 by 405 points assumed");
-  return { model: { width: width ?? 720, height: height ?? 405, slides }, warnings: [...warnings] };
+  const sized = width !== undefined && height !== undefined && width > 0 && height > 0 && width <= MAX_POINTS && height <= MAX_POINTS;
+  if (!sized) warnings.add("the slide size was missing: 720 by 405 points assumed");
+  return { model: { width: sized ? width : 720, height: sized ? height : 405, slides }, warnings: [...warnings] };
 }
 
 function* allOf(el: XmlElement, name: string): Generator<XmlElement> {
