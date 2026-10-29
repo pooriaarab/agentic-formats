@@ -1,5 +1,5 @@
 import { frameSize, sniffImage } from "./image.js";
-import { FormatError, withLimits, type Limits } from "./limits.js";
+import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import {
   MARKS,
   normalizeInline,
@@ -71,6 +71,8 @@ interface Out {
   nums: boolean[]; // one entry per list; true when ordered
   notes: string[];
   warnings: Set<string>;
+  /** Counts the text of each run as it is written, so a model that holds one note many times stops at the cap. */
+  charge: (chars: number) => void;
 }
 
 const nextId = (out: Out) => `rId${out.rels.length + 4}`; // rId1 to rId3 belong to styles, numbering, and footnotes
@@ -102,6 +104,7 @@ function imageXml(node: InlineImage, out: Out): string {
 }
 
 function runXml(run: TextRun, out: Out): string {
+  out.charge(run.text.length);
   const href = run.href === undefined ? undefined : safeHref(run.href);
   if (run.href !== undefined && !href) out.warnings.add("a link with an unsafe target was written as plain text");
   const props = (href ? '<w:rStyle w:val="Hyperlink"/>' : "") + RPR_ORDER.filter((m) => run.marks?.includes(m)).map((m) => MARK_XML[m]).join("");
@@ -181,7 +184,7 @@ function blockXml(block: Block, out: Out, depth = 0): string {
 /** Write a document as a Word file (.docx). */
 export function writeDocx(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
   const caps = withLimits(limits);
-  const out: Out = { rels: [], media: [], nums: [], notes: [], warnings: new Set() };
+  const out: Out = { rels: [], media: [], nums: [], notes: [], warnings: new Set(), charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`) };
   const body = doc.blocks.map((b) => blockXml(b, out)).join("");
   const document =
     `${XML_HEADER}<w:document ${NS}><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
@@ -316,6 +319,8 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   }
 
   const notes = new Map<string, Footnote>();
+  /** Notes already placed. A note belongs to one reference; a repeat would copy its whole content again. */
+  const placed = new Set<string>();
   const notesPart = partOf("footnotes");
   const readNote = (note: XmlElement): Footnote => {
     const content = elementsOf(note)
@@ -346,8 +351,12 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
               case "w:drawing":
                 return drawing(k);
               case "w:footnoteReference": {
-                const note = notes.get(k.attrs["w:id"]);
-                return note ? [note] : (warn("a footnote that is missing"), []);
+                const id = k.attrs["w:id"];
+                const note = notes.get(id);
+                if (!note) return warn("a footnote that is missing"), [];
+                if (placed.has(id)) return warn("a repeated footnote reference"), [];
+                placed.add(id);
+                return [note];
               }
               case "w:endnoteReference":
                 return warn("an endnote"), [];

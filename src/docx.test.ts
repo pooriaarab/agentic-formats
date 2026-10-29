@@ -176,6 +176,42 @@ describe("hostile files", () => {
   });
 });
 
+describe("a footnote that many references point to", () => {
+  const base = writeDocx({ blocks: [para("x")] }).bytes;
+  const runs = Array.from({ length: 2000 }, (_, i) => `<w:r>${i % 2 ? "<w:rPr><w:b/></w:rPr>" : ""}<w:t>n${i}</w:t></w:r>`).join("");
+  const note = `<w:footnote w:id="1"><w:p>${runs}</w:p></w:footnote>`;
+  const reference = `<w:r><w:footnoteReference w:id="1"/></w:r>`;
+  const hostile = (references: number) =>
+    patch(
+      patch(base, "word/document.xml", (x) => x.replace("</w:p>", `${reference.repeat(references)}</w:p>`)),
+      "word/footnotes.xml",
+      (x) => x.replace("</w:footnotes>", `${note}</w:footnotes>`),
+    );
+
+  test("9 a reader keeps the note once, warns on a repeat, and stays fast", () => {
+    const started = Date.now();
+    const read = readDocx(hostile(2000));
+    expect(Date.now() - started).toBeLessThan(1500);
+    const paragraph = read.model.blocks[0];
+    if (paragraph.type !== "paragraph") throw new Error("expected a paragraph");
+    expect(paragraph.content.filter((n) => n.type === "footnote")).toHaveLength(1);
+    expect(read.warnings).toEqual(["a repeated footnote reference: not imported"]);
+  });
+
+  test("9 a note used once reads with no warning", () => {
+    const read = readDocx(hostile(1));
+    expect(read.warnings).toEqual([]);
+  });
+
+  test("9 a writer refuses a model that holds one footnote many times past the text cap", () => {
+    const shared = { type: "footnote" as const, content: [text("n".repeat(1000))] };
+    const doc: TextDoc = { blocks: [{ type: "paragraph", content: Array.from({ length: 50 }, () => shared) }] };
+    expect(() => writeDocx(doc, { maxTextChars: 10_000 })).toThrow(/more than 10000 characters of text/);
+    expect(() => writeOdt(doc, { maxTextChars: 10_000 })).toThrow(/more than 10000 characters of text/);
+    expect(writeDocx(doc).warnings).toEqual([]);
+  });
+});
+
 describe.skipIf(!hasLibreOffice && !libreOfficeRequired)("LibreOffice round trip", () => {
   const lo = hasLibreOffice ? new LibreOffice() : undefined;
   const records: RoundTripRecord[] = [];
