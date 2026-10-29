@@ -26,7 +26,9 @@ export function checkDeck(deck: Deck, limits: Limits): void {
     slide.shapes.forEach((shape, j) => {
       const where = `slide ${i + 1}, shape ${j + 1}`;
       checkFrame(shape.frame, where);
-      if (shape.type === "textbox") for (const runs of shape.paragraphs) for (const run of runs) chargeText(run.text.length);
+      // A link target or a description that many runs or pictures share is written for each of them.
+      if (shape.type === "textbox") for (const runs of shape.paragraphs) for (const run of runs) chargeText(run.text.length + (run.href?.length ?? 0));
+      if (shape.type === "picture") chargeText(shape.alt?.length ?? 0);
       if (shape.type === "shape") for (const color of [shape.fill, shape.stroke]) if (color !== undefined && !HEX_COLOR.test(color)) bad(`${where} has a color that is not #rrggbb`);
     });
   });

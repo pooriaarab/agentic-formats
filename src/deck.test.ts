@@ -166,19 +166,27 @@ describe("slow files", () => {
       { length: 10_000 },
       (_, i) => `<p:sp><p:nvSpPr><p:cNvPr id="${i + 2}" name="P${i}"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="${i}"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${i * 12700}" y="0"/><a:ext cx="12700" cy="12700"/></a:xfrm></p:spPr></p:sp>`,
     ).join("");
+    // The master holds 10,000 placeholders of its own (idx 10000 and up); odd slides take theirs from it.
+    const masterPlaceholders = placeholders
+      .replaceAll(/idx="(\d+)"/g, (_m, i: string) => `idx="${Number(i) + 10_000}"`)
+      .replaceAll(/<a:off x="(\d+)"/g, (_m, x: string) => `<a:off x="${Number(x) + 10_000 * 12_700}"`);
     const entries = Object.entries(files(writePptx(deck).bytes)).map(([name, data]) => {
       if (name === "ppt/slideLayouts/slideLayout1.xml") return { name, data: strFromU8(data).replace("</p:spTree>", `${placeholders}</p:spTree>`) };
-      if (/^ppt\/slides\/slide\d+\.xml$/.test(name)) {
-        return { name, data: strFromU8(data).replace('<p:cNvSpPr txBox="1"/><p:nvPr/>', '<p:cNvSpPr/><p:nvPr><p:ph type="body" idx="9999"/></p:nvPr>').replace(/(<p:spPr>)<a:xfrm>.*?<\/a:xfrm>/, "$1") };
+      if (name === "ppt/slideMasters/slideMaster1.xml") return { name, data: strFromU8(data).replace("</p:spTree>", `${masterPlaceholders}</p:spTree>`) };
+      const slide = /^ppt\/slides\/slide(\d+)\.xml$/.exec(name);
+      if (slide) {
+        const idx = Number(slide[1]) % 2 ? 9999 : 19_999;
+        return { name, data: strFromU8(data).replace('<p:cNvSpPr txBox="1"/><p:nvPr/>', `<p:cNvSpPr/><p:nvPr><p:ph type="body" idx="${idx}"/></p:nvPr>`).replace(/(<p:spPr>)<a:xfrm>.*?<\/a:xfrm>/, "$1") };
       }
       return { name, data };
     });
     const started = Date.now();
     const read = readPptx(writeZip(entries, withLimits()));
-    expect(Date.now() - started).toBeLessThan(3000);
+    // Parsing each shared part once takes a few seconds; parsing it for every slide took 174 seconds.
+    expect(Date.now() - started).toBeLessThan(20_000);
     expect(read.model.slides).toHaveLength(500);
     expect(read.model.slides[0].shapes[0]).toMatchObject({ frame: { x: 9999, y: 0 } });
-    expect(read.model.slides[499].shapes[0]).toMatchObject({ frame: { x: 9999, y: 0 } });
+    expect(read.model.slides[1].shapes[0]).toMatchObject({ frame: { x: 19_999, y: 0 } });
     expect(read.warnings).toEqual([]);
   });
 
@@ -192,6 +200,60 @@ describe("slow files", () => {
     const notes = readPptx(shared);
     expect(notes.model.slides.map((s) => s.notes)).toEqual(["notes one", undefined]);
     expect(notes.warnings).toEqual(["a notes page that two slides share: not imported"]);
+  });
+
+  test("11 a connector with no position is reported", () => {
+    const base = writePptx({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
+    const read = readPptx(patch(base, "ppt/slides/slide1.xml", (x) => x.replace("</p:spTree>", `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="9" name="c"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr/></p:cxnSp></p:spTree>`)));
+    expect(read.warnings).toEqual(["a connector without a position: not imported"]);
+  });
+
+  test("11 a link target and a description that many runs or pictures share count against the text cap", () => {
+    const link = { type: "text" as const, text: "x", href: `https://example.org/${"a".repeat(10_000)}` };
+    const deck = (n: number): Deck => ({ width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame, paragraphs: [Array.from({ length: n }, () => link)] }] }] });
+    for (const write of [writePptx, writeOdp]) {
+      expect(() => write(deck(5), { maxTextChars: 100_000 })).not.toThrow();
+      expect(() => write(deck(20), { maxTextChars: 100_000 })).toThrow(/more than 100000 characters of text/);
+    }
+    const picture = { type: "picture" as const, frame, data: PNG, mime: "image/png" as const, alt: "d".repeat(10_000) };
+    expect(() => writePptx({ width: 720, height: 405, slides: [{ shapes: Array.from({ length: 20 }, () => picture) }] }, { maxTextChars: 100_000 })).toThrow(/characters of text/);
+  });
+
+  test("11 one shape or one empty paragraph that a model holds many times stops at the byte cap", () => {
+    const shape = { type: "shape" as const, kind: "rectangle" as const, frame };
+    const many = { width: 720, height: 405, slides: [{ shapes: Array.from({ length: 200_000 }, () => shape) }] };
+    const empty = { width: 720, height: 405, slides: [{ shapes: [{ type: "textbox" as const, frame, paragraphs: Array.from({ length: 500_000 }, () => [] as never[]) }] }] };
+    for (const write of [writePptx, writeOdp]) {
+      for (const deck of [many, empty]) {
+        const started = Date.now();
+        expect(() => write(deck, { maxTotalBytes: 1_000_000 })).toThrow(/passes 1000000 bytes while it is written/);
+        expect(Date.now() - started).toBeLessThan(5000);
+      }
+    }
+  });
+
+  test("11 text:s runs count against the text cap, and nested spans keep seven marks at most", () => {
+    const odp = writeOdp({ width: 720, height: 405, slides: [slideOf("x")] }).bytes;
+    const spaces = (n: number) => patch(odp, "content.xml", (x) => x.replace(">x</text:p>", `>a${'<text:s text:c="1000"/>'.repeat(n)}b</text:p>`));
+    expect(() => readOdp(spaces(11), { maxTextChars: 10_000 })).toThrow(/spaces in <text:s> elements/);
+    expect(readOdp(spaces(9), { maxTextChars: 10_000 }).warnings).toEqual([]);
+    const props = `<style:text-properties fo:font-weight="bold" fo:font-style="italic" style:text-underline-style="solid" style:text-line-through-style="solid" fo:font-family="monospace" style:text-position="super 58%"/>`;
+    const styles = Array.from({ length: 50 }, (_, i) => `<style:style style:name="m${i}" style:family="text"${i ? ` style:parent-style-name="m${i - 1}"` : ""}>${props}</style:style>`).join("");
+    const spans = `<text:span text:style-name="m49">`.repeat(60) + "x" + "</text:span>".repeat(60);
+    const started = Date.now();
+    const read = readOdp(patch(odp, "content.xml", (x) => x.replace("</office:automatic-styles>", `${styles}</office:automatic-styles>`).replace(">x</text:p>", `>${spans}</text:p>`)));
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(read.model.slides[0].shapes[0]).toMatchObject({ paragraphs: [[{ text: "x", marks: ["bold", "italic", "underline", "strike", "code", "superscript"] }]] });
+  });
+
+  test("11 one image part named by many pictures counts its bytes for each picture", () => {
+    const padded = new Uint8Array(10_000);
+    padded.set(PNG);
+    const picture = { type: "picture" as const, frame, data: padded, mime: "image/png" as const };
+    const one = writePptx({ width: 720, height: 405, slides: [{ shapes: [picture] }] }).bytes;
+    const many = patch(one, "ppt/slides/slide1.xml", (x) => x.replace(/<p:pic>.*<\/p:pic>/, (m) => m.repeat(5)));
+    expect(readPptx(many, { maxTotalBytes: 60_000 }).model.slides[0].shapes).toHaveLength(5);
+    expect(() => readPptx(many, { maxTotalBytes: 40_000 })).toThrow(/images in the file add up to more than 40000 bytes/);
   });
 
   test("10 an ODP style chain of twenty thousand styles is refused fast, a chain at the cap reads, a loop stops", () => {

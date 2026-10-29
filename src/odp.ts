@@ -1,7 +1,7 @@
 import { checkDeck, tenth } from "./deck.js";
 import { cm, lengthPt, sniffImage } from "./image.js";
 import { FormatError, capped, withLimits, type Limits } from "./limits.js";
-import { normalizeInline, type Deck, type Frame, type Inline, type Mark, type ReadResult, type Slide, type SlideShape, type TextRun, type WriteResult } from "./model.js";
+import { mergeMarks, normalizeInline, type Deck, type Frame, type Inline, type Mark, type ReadResult, type Slide, type SlideShape, type TextRun, type WriteResult } from "./model.js";
 import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, writeOdfPackage, type OdfImage } from "./odf.js";
 import { marksOfProps, runXml, spanStylesXml } from "./odt.js";
 import { childOf, elementsOf, safeHref, textOf, xmlEscape as esc, type XmlElement } from "./xml.js";
@@ -17,6 +17,8 @@ interface Out {
   shapeStyles: Map<string, string>;
   warnings: Set<string>;
   charge: (chars: number) => void;
+  /** Counts the XML as each piece is made, so a model that holds one shape many times fails before one string grows past the cap. */
+  bytes: (length: number) => void;
 }
 
 const at = (f: Frame) => `svg:x="${cm(f.x)}" svg:y="${cm(f.y)}" svg:width="${cm(f.width)}" svg:height="${cm(f.height)}"`;
@@ -28,10 +30,22 @@ function shapeStyle(shape: { fill?: string; stroke?: string }, out: Out): string
 }
 
 function shapeXml(shape: SlideShape, out: Out): string {
+  const xml = shapeXmlOf(shape, out);
+  out.bytes(xml.length);
+  return xml;
+}
+
+function shapeXmlOf(shape: SlideShape, out: Out): string {
   const { frame } = shape;
   switch (shape.type) {
     case "textbox": {
-      const paragraphs = shape.paragraphs.map((runs) => `<text:p text:style-name="Pdeck">${runs.map((r) => runXml(r, out)).join("")}</text:p>`).join("");
+      const paragraphs = shape.paragraphs
+        .map((runs) => {
+          const p = `<text:p text:style-name="Pdeck">${runs.map((r) => runXml(r, out)).join("")}</text:p>`;
+          out.bytes(p.length);
+          return p;
+        })
+        .join("");
       return `<draw:frame draw:style-name="gtb" ${at(frame)}><draw:text-box>${paragraphs}</draw:text-box></draw:frame>`;
     }
     case "picture": {
@@ -57,7 +71,14 @@ function shapeXml(shape: SlideShape, out: Out): string {
 export function writeOdp(deck: Deck, limits?: Partial<Limits>): WriteResult {
   const caps = withLimits(limits);
   checkDeck(deck, caps);
-  const out: Out = { images: [], spans: new Map(), shapeStyles: new Map(), warnings: new Set(), charge: capped(caps.maxTextChars, `the deck has more than ${caps.maxTextChars} characters of text`) };
+  const out: Out = {
+    images: [],
+    spans: new Map(),
+    shapeStyles: new Map(),
+    warnings: new Set(),
+    charge: capped(caps.maxTextChars, `the deck has more than ${caps.maxTextChars} characters of text`),
+    bytes: capped(caps.maxTotalBytes, `the deck passes ${caps.maxTotalBytes} bytes while it is written`),
+  };
   const pages = deck.slides.map((slide, i) => {
     const notes = slide.notes
       ? `<presentation:notes draw:style-name="dp1"><draw:page-thumbnail draw:layer="layout" draw:page-number="${i + 1}" presentation:class="page" ${at({ x: 0, y: 0, width: deck.width, height: deck.height })}/>` +
@@ -87,6 +108,8 @@ export function writeOdp(deck: Deck, limits?: Partial<Limits>): WriteResult {
 // ---------- read ----------
 
 const SPACE = "\u0001";
+/** A `<text:s>` element stands for this many spaces at most. */
+const MAX_SPACES = 1000;
 
 /** Read an OpenDocument presentation (.odp). Content with no place in the model is listed in `warnings`. */
 export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult<Deck> {
@@ -96,6 +119,9 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   if (!presentation) throw new FormatError("INVALID_FILE", "the ODP file has no presentation body");
   const warnings = new Set<string>();
   const warn = (what: string) => warnings.add(`${what}: not imported`);
+  // A few bytes of `<text:s text:c="1000"/>` stand for a thousand spaces, and an image part is shared by every frame that names it.
+  const chargeSpaces = capped(caps.maxTextChars, `the file has more than ${caps.maxTextChars} spaces in <text:s> elements`);
+  const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
 
   const styles = new Map<string, { parent?: string; props: Record<string, string>; text: Mark[]; auto: boolean }>();
   const collect = (el: XmlElement, auto: boolean): void => {
@@ -120,8 +146,8 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     return names;
   };
   const prop = (name: string | undefined, key: string): string | undefined => chain(name).map((n) => styles.get(n)?.props[key]).find((v) => v !== undefined);
-  const marksOf = (name?: string): Mark[] => chain(name).flatMap((n) => styles.get(n)?.text ?? []);
-  const paragraphMarks = (name?: string): Mark[] => chain(name).flatMap((n) => (styles.get(n)?.auto ? styles.get(n)!.text : []));
+  const marksOf = (name?: string): Mark[] => mergeMarks(chain(name).flatMap((n) => styles.get(n)?.text ?? []), []);
+  const paragraphMarks = (name?: string): Mark[] => mergeMarks(chain(name).flatMap((n) => (styles.get(n)?.auto ? styles.get(n)!.text : [])), []);
   const color = (name: string | undefined, fill: boolean): string | undefined => {
     const [mode, value] = fill ? [prop(name, "draw:fill"), prop(name, "draw:fill-color")] : [prop(name, "draw:stroke"), prop(name, "svg:stroke-color")];
     return mode === "solid" && value && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : undefined;
@@ -136,14 +162,19 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
       };
       if (typeof c === "string") return run(c.replace(/[ \t\r\n]+/g, " "));
       switch (c.name) {
-        case "text:s":
-          return run(SPACE.repeat(Math.max(1, Math.min(1000, Number(c.attrs["text:c"] ?? 1)) || 1)));
+        case "text:s": {
+          const asked = Number(c.attrs["text:c"] ?? 1) || 1;
+          if (asked > MAX_SPACES) warnings.add(`a run of more than ${MAX_SPACES} spaces was shortened`);
+          const count = Math.max(1, Math.min(MAX_SPACES, asked));
+          chargeSpaces(count);
+          return run(SPACE.repeat(count));
+        }
         case "text:tab":
           return run("\t");
         case "text:line-break":
           return run("\n");
         case "text:span":
-          return runs(c, [...marks, ...marksOf(c.attrs["text:style-name"])], href);
+          return runs(c, mergeMarks(marks, marksOf(c.attrs["text:style-name"])), href);
         case "text:a": {
           const target = safeHref(c.attrs["xlink:href"]);
           if (!target) warnings.add("a link with an unsafe target was read as plain text");
@@ -185,8 +216,10 @@ export function readOdp(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
             const data = files[href];
             const sniffed = data ? sniffImage(data) : undefined;
             const alt = textOf(childOf(el, "svg:desc")).trim() || textOf(childOf(el, "svg:title")).trim();
-            if (data && sniffed) out.push({ type: "picture", frame: frameOf(el), data, mime: sniffed.mime, ...(alt ? { alt } : {}) });
-            else warnings.add(/^[a-z][a-z0-9+.-]*:/i.test(href) ? "a remote image: not loaded" : "an image that is not a PNG, JPEG, or GIF: not imported");
+            if (data && sniffed) {
+              chargeImages(data.length);
+              out.push({ type: "picture", frame: frameOf(el), data, mime: sniffed.mime, ...(alt ? { alt } : {}) });
+            } else warnings.add(/^[a-z][a-z0-9+.-]*:/i.test(href) ? "a remote image: not loaded" : "an image that is not a PNG, JPEG, or GIF: not imported");
           } else warn(el.name);
           break;
         }

@@ -1,6 +1,6 @@
 import { checkDeck, tenth } from "./deck.js";
 import { sniffImage } from "./image.js";
-import { FormatError, withLimits, type Limits } from "./limits.js";
+import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { MARKS, normalizeInline, type Deck, type Frame, type Inline, type Mark, type ReadResult, type Slide, type SlideShape, type TextRun, type WriteResult } from "./model.js";
 import { REL_NS, XML_HEADER, contentTypesXml, readOoxmlPackage, relsXml } from "./ooxml.js";
 import { childOf, elementsOf, safeHref, textOf, xmlEscape as esc, type XmlElement } from "./xml.js";
@@ -48,6 +48,8 @@ interface Out {
   warnings: Set<string>;
 }
 interface SlideOut extends Out {
+  /** Counts the XML as each piece is made, so a model that holds one shape many times fails before one string grows past the cap. */
+  bytes: (length: number) => void;
   rels: { id: string; type: string; target: string; external?: boolean }[];
   media: ZipEntry[];
   mediaCount: { n: number };
@@ -74,12 +76,24 @@ function runXml(run: TextRun, out: SlideOut): string {
 }
 
 function shapeXml(shape: SlideShape, out: SlideOut): string {
+  const xml = shapeXmlOf(shape, out);
+  out.bytes(xml.length);
+  return xml;
+}
+
+function shapeXmlOf(shape: SlideShape, out: SlideOut): string {
   const id = ++out.nextShape;
   switch (shape.type) {
     case "textbox":
       return (
         `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="TextBox ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(shape.frame)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
-        `<p:txBody><a:bodyPr wrap="square" rtlCol="0"><a:noAutofit/></a:bodyPr><a:lstStyle/>${shape.paragraphs.map((runs) => `<a:p>${runs.map((r) => runXml(r, out)).join("") || '<a:endParaRPr lang="en-US" sz="1800"/>'}</a:p>`).join("")}</p:txBody></p:sp>`
+        `<p:txBody><a:bodyPr wrap="square" rtlCol="0"><a:noAutofit/></a:bodyPr><a:lstStyle/>${shape.paragraphs
+          .map((runs) => {
+            const p = `<a:p>${runs.map((r) => runXml(r, out)).join("") || '<a:endParaRPr lang="en-US" sz="1800"/>'}</a:p>`;
+            out.bytes(p.length);
+            return p;
+          })
+          .join("")}</p:txBody></p:sp>`
       );
     case "picture": {
       const sniffed = sniffImage(shape.data);
@@ -114,6 +128,7 @@ export function writePptx(deck: Deck, limits?: Partial<Limits>): WriteResult {
   const warnings = new Set<string>();
   const media: ZipEntry[] = [];
   const mediaCount = { n: 0 };
+  const chargeBytes = capped(caps.maxTotalBytes, `the deck passes ${caps.maxTotalBytes} bytes while it is written`);
   const hasNotes = deck.slides.some((s) => s.notes);
   const overrides: Record<string, string> = {
     "ppt/presentation.xml": `${PML}.presentation.main+xml`,
@@ -124,7 +139,7 @@ export function writePptx(deck: Deck, limits?: Partial<Limits>): WriteResult {
   const entries: ZipEntry[] = [];
   deck.slides.forEach((slide, i) => {
     const n = i + 1;
-    const out: SlideOut = { warnings, rels: [], media, mediaCount, nextShape: 1 };
+    const out: SlideOut = { warnings, rels: [], media, mediaCount, nextShape: 1, bytes: chargeBytes };
     const shapes = slide.shapes.map((s) => shapeXml(s, out)).join("");
     entries.push({ name: `ppt/slides/slide${n}.xml`, data: `${XML_HEADER}<p:sld ${NS}><p:cSld><p:spTree>${GROUP}${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>` });
     const rels = [{ id: "rId1", type: "slideLayout", target: "../slideLayouts/slideLayout1.xml" }, ...(slide.notes ? [{ id: "rId2", type: "notesSlide", target: `../notesSlides/notesSlide${n}.xml` }] : []), ...out.rels];
@@ -238,6 +253,8 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
 
   /** Slide and notes parts read so far. A part that two entries name would be read and copied twice. */
   const readParts = new Set<string>();
+  // An image part is shared by every picture that names it, so each picture counts its bytes.
+  const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
   const slides: Slide[] = [];
   for (const entry of elementsOf(childOf(presentation, "p:sldIdLst"))) {
     const slideRel = rels.get(entry.attrs["r:id"] ?? "");
@@ -311,6 +328,7 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
         const frame = frameFrom(childOf(spPr, "a:xfrm"));
         const stroke = hex(childOf(spPr, "a:ln"));
         if (frame) shapes.push({ type: "shape", kind: "line", frame, ...(stroke ? { stroke } : {}) });
+        else warn("a connector without a position");
       } else if (el.name === "p:pic") {
         const blip = childOf(childOf(el, "p:blipFill"), "a:blip");
         const target = blip?.attrs["r:embed"] ? slideRels.get(blip.attrs["r:embed"]) : undefined;
@@ -319,8 +337,10 @@ export function readPptx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
         const frame = frameFrom(childOf(childOf(el, "p:spPr"), "a:xfrm"));
         const alt = childOf(childOf(el, "p:nvPicPr"), "p:cNvPr")?.attrs.descr?.trim();
         if (blip?.attrs["r:link"]) warnings.add("a remote image: not loaded");
-        else if (data && sniffed && frame) shapes.push({ type: "picture", frame, data, mime: sniffed.mime, ...(alt ? { alt } : {}) });
-        else warnings.add("an image that is not a PNG, JPEG, or GIF: not imported");
+        else if (data && sniffed && frame) {
+          chargeImages(data.length);
+          shapes.push({ type: "picture", frame, data, mime: sniffed.mime, ...(alt ? { alt } : {}) });
+        } else warnings.add("an image that is not a PNG, JPEG, or GIF: not imported");
       } else if (el.name === "p:grpSp" || el.name === "p:graphicFrame") warn(el.name === "p:grpSp" ? "a group of shapes" : "a table, chart, or diagram");
     }
     const notesPart = kindTarget(slideRels, "notesSlide");
