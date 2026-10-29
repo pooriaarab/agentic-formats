@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- `agentic-formats-mcp --help` and `-h` print the usage and exit 0. `--version` and `-V` print the version and exit 0. An unknown argument exits 2. In 0.3.0 the MCP binary started the server for every argument, so `--help` waited on stdin. The `agentic-formats` CLI already behaved this way.
+- The `zod` dependency is now 4.6.7. This fixes GHSA-mrhx-c7xc-m3w5, which 0.3.0 carried through `zod` 3.25. The MCP tools reject a bad argument with the same fields, but zod 4 words the message in a different way.
+- Direct tests for the ODF and OOXML helpers in `odf.ts` and `ooxml.ts`. The behavior does not change.
+
 ## 0.3.0
 
 - New `writePdf(model, limits?)` writes a `Deck` (one page per slide, at the deck size) or a `TextDoc` (Letter pages) as a PDF. It returns `{ bytes, warnings }`, like the other writers. It is plain JavaScript and runs in Node and in a Worker.
