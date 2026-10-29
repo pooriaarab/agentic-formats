@@ -10,18 +10,30 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 ## Use the SDK
 
 ```js
-import { readOdt, writeOdt } from "agentic-formats";
+import { convert, inspect, readOdt, writeDocx } from "agentic-formats";
 
-const { bytes } = writeOdt({ blocks: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }] });
 const { model, warnings } = readOdt(bytes);
+const { bytes: docx } = writeDocx(model);
+const result = convert(bytes, "odt", "docx"); // { bytes, warnings, from, to }
 ```
 
-## Use the CLI and MCP server
+## Use the CLI
 
-`agentic-formats --help` lists the commands. `agentic-formats mcp` starts the MCP server.
-File commands and tools land in later releases.
+```sh
+agentic-formats convert report.odt report.docx
+agentic-formats inspect report.docx
+```
+
+Output is JSON on stdout. A refusal exits with 1 and prints the reason on stderr.
+`convert` replaces no file unless you pass `--force`.
+
+## Use the MCP server
+
+Start it with `agentic-formats mcp`. Call `inspect_file`, `read_model`, or `convert_file`.
+Set `AGENTIC_FORMATS_ROOT` to limit every path to one folder.
 
 ## Rules
 
 - Every file is hostile input. Keep the limits.
-- Report a `FormatError` and every warning as failures.
+- Report a `FormatError` and every warning to the user.
+- Replace a file only when the user asked.

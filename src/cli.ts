@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { FORMATS, convert, formatOfName, inspect, type Format } from "./convert.js";
+import { UsageError, describeError, readInput, writeOutput } from "./files.js";
 import { VERSION } from "./version.js";
 
 const HELP = `agentic-formats ${VERSION}
@@ -9,14 +11,27 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 Usage: agentic-formats <command>
 
 Commands:
-  mcp              Start the MCP server on stdio.
+  convert <in> <out> [--force]   Convert a file. The extensions pick the formats.
+  inspect <file>                 Print what a file holds, as JSON.
+  mcp                            Start the MCP server on stdio.
+
+Formats: ${FORMATS.join(", ")}. A file converts to a format of its own kind:
+documents (odt, docx), spreadsheets (ods, xlsx), slide decks (odp, pptx).
+Output is JSON on stdout. Errors go to stderr and the exit code is 1.
 
 Flags:
+  --force          Replace the output file if it exists.
   --help, -h       Print this help.
   --version, -V    Print the version.`;
 
+function formatOf(path: string): Format {
+  const format = formatOfName(path);
+  if (!format) throw new UsageError(`"${path}" has no known extension (${FORMATS.join(", ")})`);
+  return format;
+}
+
 export async function runCli(argv: string[]): Promise<number> {
-  const [first] = argv;
+  const [first, ...rest] = argv;
   if (first === undefined || first === "--help" || first === "-h") {
     console.log(HELP);
     return 0;
@@ -27,10 +42,30 @@ export async function runCli(argv: string[]): Promise<number> {
   }
   if (first === "mcp") {
     const { startMcp } = await import("./mcp.js");
-    await startMcp();
+    await startMcp({ root: process.env.AGENTIC_FORMATS_ROOT });
     return 0;
   }
-  console.error(`unknown command "${first}"\nRun "agentic-formats --help" for usage.`);
+  const force = rest.includes("--force");
+  const paths = rest.filter((a) => a !== "--force");
+  try {
+    if (first === "convert" && paths.length === 2 && paths.every((p) => !p.startsWith("-"))) {
+      const [input, output] = paths;
+      const result = convert(readInput(input), formatOf(input), formatOf(output));
+      writeOutput(output, result.bytes, force, input);
+      console.log(JSON.stringify({ input, output, from: result.from, to: result.to, bytes: result.bytes.length, warnings: result.warnings }));
+      return 0;
+    }
+    if (first === "inspect" && paths.length === 1 && !force && !paths[0].startsWith("-")) {
+      console.log(JSON.stringify(inspect(readInput(paths[0]), formatOf(paths[0]))));
+      return 0;
+    }
+  } catch (error) {
+    const message = describeError(error);
+    if (message === undefined) throw error;
+    console.error(message);
+    return 1;
+  }
+  console.error(`Usage error: "${argv.join(" ")}" is not a valid command.\nRun "agentic-formats --help" for usage.`);
   return 2;
 }
 

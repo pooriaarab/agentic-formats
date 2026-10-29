@@ -7,13 +7,36 @@
 
 Read and write open office files: ODF and OOXML for documents, spreadsheets, and slides.
 
-> Status: early. The neutral models, the input guards, and all six formats work: ODT, DOCX, ODS,
-> XLSX, ODP, and PPTX. The package is not on npm yet.
+> Status: early. The neutral models, the input guards, all six formats (ODT, DOCX, ODS, XLSX, ODP,
+> PPTX), the CLI, and the MCP server work. The package is not on npm yet.
 
 ## Install
 
 ```sh
 npm install agentic-formats
+```
+
+## Quick start
+
+```sh
+npx agentic-formats convert report.odt report.docx
+npx agentic-formats inspect report.docx
+npx agentic-formats mcp
+```
+
+`convert` picks the formats from the file extensions and prints JSON: the files, the sizes, and
+`warnings` (each one names content that was lost). It refuses to replace a file unless you pass
+`--force`, and it never replaces its input. A file converts to a format of its own kind:
+documents (`odt`, `docx`), spreadsheets (`ods`, `xlsx`), slide decks (`odp`, `pptx`).
+Errors go to stderr and the exit code is 1.
+
+The MCP server has three tools: `inspect_file`, `read_model` (the file as neutral JSON), and
+`convert_file`. Set `AGENTIC_FORMATS_ROOT` to a folder to limit every path to it; a path that
+leaves the folder, by `..` or by a link, is refused. Without it a tool reads and writes any path
+the process can. Add the server to Claude Code with `.mcp.json`:
+
+```json
+{ "mcpServers": { "agentic-formats": { "command": "npx", "args": ["-y", "agentic-formats", "mcp"], "env": { "AGENTIC_FORMATS_ROOT": "/path/to/folder" } } } }
 ```
 
 ## What works today
@@ -57,8 +80,8 @@ try {
 
 ## Planned
 
-- A CLI (`agentic-formats convert in.odt out.docx`) and MCP tools.
-- Round-trip tests against LibreOffice output.
+- An HTTP API as a Cloudflare Worker, and a small web UI. The Worker answers `/health` only.
+- Writing a file from a model that an agent builds (`write_model`), and more formats (Markdown, CSV, PDF).
 
 ## Limits
 
@@ -80,6 +103,7 @@ try {
   of its parent. Our DOCX writer and reader keep the kind.
 - A list item holds one paragraph and an optional sublist. Extra paragraphs join with line breaks.
 - Images are PNG, JPEG, or GIF, found by their first bytes. A remote image is never loaded.
+- The CLI and the MCP tools read and write files on disk. They are not an HTTP service.
 - Lengths in the models are in points. Every reader reads UTF-8 XML only.
 - A file is never partly read. A file that goes past a limit is rejected.
 

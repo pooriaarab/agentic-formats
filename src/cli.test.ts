@@ -14,7 +14,7 @@ describe("built package", () => {
     expect(spawnSync("node", [cli, "--help"], { encoding: "utf8" }).stdout).toContain("agentic-formats");
     const bad = spawnSync("node", [cli, "summary"], { encoding: "utf8" });
     expect(bad.status).toBe(2);
-    expect(bad.stderr).toContain('unknown command "summary"');
+    expect(bad.stderr).toContain('"summary" is not a valid command');
   });
 
   test("the MCP server starts over stdio", async () => {
