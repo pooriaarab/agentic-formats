@@ -1,5 +1,5 @@
 import { toOpenFormula, fromOpenFormula } from "./formula.js";
-import { FormatError, withLimits, type Limits } from "./limits.js";
+import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { parseRef, refOf, sortedRefs, type Cell, type CellValue, type ReadResult, type Sheet, type Workbook, type WriteResult } from "./model.js";
 import { ODF_NS_ATTRS, XML_HEADER, readOdfPackage, spaced, writeOdfPackage } from "./odf.js";
 import { ODS_FORMAT, checkWorkbook, hasContent, isBooleanLiteral, isDateFormat, isoToSerial, serialToIso } from "./spreadsheet.js";
@@ -48,7 +48,7 @@ function cellXml(cell: Cell, styleOf: (format: string) => string | undefined): s
   return `<table:table-cell ${attrs.join(" ")}>${text !== "" || value !== undefined ? `<text:p>${spaced(text)}</text:p>` : ""}</table:table-cell>`;
 }
 
-function sheetXml(sheet: Sheet, styleOf: (format: string) => string | undefined): string {
+function sheetXml(sheet: Sheet, styleOf: (format: string) => string | undefined, charge: (bytes: number) => void): string {
   const byRow = new Map<number, [number, Cell][]>();
   let columns = 1;
   for (const ref of sortedRefs(sheet)) {
@@ -56,7 +56,9 @@ function sheetXml(sheet: Sheet, styleOf: (format: string) => string | undefined)
     if (!hasContent(cell)) continue;
     const at = parseRef(ref)!;
     columns = Math.max(columns, at.column);
-    byRow.set(at.row, [...(byRow.get(at.row) ?? []), [at.column, cell]]);
+    const inRow = byRow.get(at.row);
+    if (inRow) inRow.push([at.column, cell]);
+    else byRow.set(at.row, [[at.column, cell]]);
   }
   let rows = "";
   let row = 0;
@@ -67,7 +69,9 @@ function sheetXml(sheet: Sheet, styleOf: (format: string) => string | undefined)
       .map(([at, cell]) => {
         const gap = at > column + 1 ? `<table:table-cell table:number-columns-repeated="${at - column - 1}"/>` : "";
         column = at;
-        return gap + cellXml(cell, styleOf);
+        const xml = gap + cellXml(cell, styleOf);
+        charge(xml.length);
+        return xml;
       })
       .join("")}</table:table-row>`;
     row = number;
@@ -89,7 +93,9 @@ export function writeOds(book: Workbook, limits?: Partial<Limits>): WriteResult 
     if (!formats.has(format)) formats.set(format, `${formats.size + 1}`);
     return `ce${formats.get(format)}`;
   };
-  const tables = book.sheets.map((sheet) => sheetXml(sheet, styleOf)).join("");
+  // A running cap, so a model with huge cells stops before the content exists as one string.
+  const charge = capped(caps.maxEntryBytes, `the export passes ${caps.maxEntryBytes} bytes while it is written`);
+  const tables = book.sheets.map((sheet) => sheetXml(sheet, styleOf, charge)).join("");
   const styles = [...formats].map(([format, n]) => `${dataStyleXml(format, `N${n}`)}<style:style style:name="ce${n}" style:family="table-cell" style:parent-style-name="Default" style:data-style-name="N${n}"/>`).join("");
   const content =
     `${XML_HEADER}<office:document-content ${ODF_NS_ATTRS} ${FORMULA_NS} office:version="1.3"><office:automatic-styles>${styles}</office:automatic-styles>` +
@@ -165,6 +171,8 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   };
 
   let cellCount = 0;
+  // A repeated cell holds the same text in every copy, so each copy counts.
+  const chargeText = capped(caps.maxTextChars, `the workbook has more than ${caps.maxTextChars} characters of cell text`);
   const count = (n: number) => {
     cellCount += n;
     if (cellCount > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${caps.maxCells} cells`);
@@ -224,6 +232,7 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
             if (c.name === "table:covered-table-cell" || c.attrs["table:number-columns-spanned"] || c.attrs["table:number-rows-spanned"]) warn("merged cells were read as single cells");
             if (cell) {
               count(repeat * rowRepeat);
+              chargeText(((typeof cell.value === "string" ? cell.value.length : 0) + (cell.formula?.length ?? 0)) * repeat * rowRepeat);
               if (column + repeat > MAX_COLUMN) throw new FormatError("LIMIT_EXCEEDED", "a cell lies outside the sheet grid");
               for (let i = 0; i < repeat; i++) found.push([column + i + 1, cell]);
             }

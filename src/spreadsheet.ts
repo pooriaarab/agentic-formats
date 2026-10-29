@@ -1,8 +1,8 @@
-import { FormatError, type Limits } from "./limits.js";
+import { FormatError, capped, type Limits } from "./limits.js";
 import { parseRef, type Cell, type Workbook } from "./model.js";
 
 /** The formats an ODS file holds as data styles. XLSX stores any code as it is. */
-export const ODS_FORMAT = /^(#,##0|0)(\.0+)?%?$|^yyyy-mm-dd$/;
+export const ODS_FORMAT = /^(#,##0|0)(\.0{1,30})?%?$|^yyyy-mm-dd$/;
 export const isDateFormat = (format: string | undefined): boolean => format === "yyyy-mm-dd";
 
 const DAY_MS = 86_400_000;
@@ -22,7 +22,7 @@ export function isoToSerial(iso: string): number | undefined {
   return Number.isNaN(ms) ? undefined : (ms - EPOCH) / DAY_MS;
 }
 
-const BAD_SHEET_CHARS = /[[\]:*?/\\]/;
+const BAD_SHEET_CHARS = /[[\]:*?/\\\u0000-\u001f]/;
 
 /** Refuse a workbook that no writer could write: bad sheet names, cells off the grid, numbers that are not finite. */
 export function checkWorkbook(book: Workbook, limits: Limits): void {
@@ -32,6 +32,7 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
   if (book.sheets.length === 0) bad("a workbook needs at least one sheet");
   const names = new Set<string>();
   let cells = 0;
+  const chargeText = capped(limits.maxTextChars, `the workbook has more than ${limits.maxTextChars} characters of cell text`);
   for (const sheet of book.sheets) {
     const { name } = sheet;
     if (!name || name.length > 31 || BAD_SHEET_CHARS.test(name) || name.startsWith("'") || name.endsWith("'")) bad(`"${name}" is not a usable sheet name`);
@@ -42,6 +43,8 @@ export function checkWorkbook(book: Workbook, limits: Limits): void {
       if (++cells > limits.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${limits.maxCells} cells`);
       if (typeof cell.value === "number" && !Number.isFinite(cell.value)) bad(`${sheet.name}!${ref} holds a number that is not finite`);
       if (cell.formula !== undefined && (typeof cell.formula !== "string" || cell.formula.length > 8192)) bad(`${sheet.name}!${ref} holds a formula that is not usable`);
+      // A string that many cells point to is written once for each cell, so it counts once for each cell.
+      chargeText((typeof cell.value === "string" ? cell.value.length : 0) + (cell.formula?.length ?? 0));
     }
   }
 }

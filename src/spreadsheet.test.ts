@@ -16,6 +16,8 @@
  *    finite, too many cells; a format ODS cannot hold goes unreported
  *  9 a hostile file is read: a DOCTYPE, the wrong type, a huge repeat count, a cell off the grid,
  *    a shared string index past the table, a missing relationship, too many cells
+ * 11 one big string fills many cells: a shared string used by many cells, a repeated cell, a model
+ *    whose cells share one string; a writer builds its whole output before it checks the size
  * 10 LibreOffice cannot open our file, or its re-save does not read back to the same model, in the
  *    same format or after a trip through the other format; LibreOffice does not compute a formula
  *    we wrote without a cached result
@@ -123,10 +125,24 @@ describe.each(formats)("%s: write then read", (format) => {
     const refuse = (book: Workbook, limits = {}) => expect(() => write(book, limits)).toThrow(FormatError);
     refuse({ sheets: [] });
     refuse({ sheets: [{ name: "A", cells: {} }, { name: "a", cells: {} }] });
-    for (const name of ["", "x".repeat(32), "a/b", "a:b", "[a]", "a?", "a*", "a\\b", "'a", "a'"]) refuse({ sheets: [{ name, cells: {} }] });
+    for (const name of ["", "x".repeat(32), "a/b", "a:b", "[a]", "a?", "a*", "a\\b", "'a", "a'", "a\nb", "a\tb"]) refuse({ sheets: [{ name, cells: {} }] });
     for (const ref of ["A0", "a1", "AAAA1", "1A", "XFE1", "A1048577", "A01"]) refuse(sheet("S", { [ref]: { value: 1 } }));
     for (const value of [Number.NaN, Infinity, -Infinity]) refuse(sheet("S", { A1: { value } }));
     refuse(sheet("S", { A1: { value: 1 }, A2: { value: 2 } }), { maxCells: 1 });
+  });
+
+  test("11 a model whose cells share one big string is refused before any output is built", () => {
+    const big = "x".repeat(50_000);
+    const cells = { A1: { value: big }, A2: { value: big }, A3: { value: big } };
+    const caps = { maxTextChars: 100_000 };
+    expect(() => write(sheet("S", cells), caps)).toThrow(/more than 100000 characters of cell text/);
+    expect(() => write(sheet("S", { A1: cells.A1, A2: cells.A2 }), caps)).not.toThrow();
+    expect(() => write(sheet("S", { A1: { value: 1, formula: "A".repeat(8000) }, A2: { value: 1, formula: "A".repeat(8000) } }), { maxTextChars: 15_000 })).toThrow(/characters of cell text/);
+  });
+
+  test("11 the output size is capped while it is written, not after", () => {
+    const cells = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`A${i + 1}`, { value: "abcdefghij" }]));
+    expect(() => write(sheet("S", cells), { maxEntryBytes: 1500, maxTotalBytes: 1500 })).toThrow(/while it is written/);
   });
 
   test("6 every XML part parses with an independent parser", () => {
@@ -143,6 +159,12 @@ describe("ods package", () => {
     expect(strFromU8(bytes.subarray(30, 38))).toBe("mimetype");
     expect(new DataView(bytes.buffer, bytes.byteOffset).getUint16(8, true)).toBe(0);
     expect(strFromU8(unzipSync(bytes)["META-INF/manifest.xml"])).toMatch(/<manifest:manifest [^>]*manifest:version="1\.3"/);
+  });
+
+  test("8 a number format with more than 30 decimals is reported and the value is kept", () => {
+    const at = (zeros: number) => writeOds(sheet("S", { A1: { value: 1, format: `0.${"0".repeat(zeros)}` } }));
+    expect(at(30).warnings).toEqual([]);
+    expect(at(31).warnings).toEqual([`the number format "0.${"0".repeat(31)}" is not written in ODS`]);
   });
 
   test("8 a format that ODS cannot hold is reported and the value is kept", () => {
@@ -261,6 +283,36 @@ describe("hostile files", () => {
     const many = sheet("S", { A1: { value: 1 }, A2: { value: 2 }, A3: { value: 3 } });
     expect(() => readXlsx(writeXlsx(many).bytes, { maxCells: 2 })).toThrow(/more than 2 cells/);
     expect(() => readOds(writeOds(many).bytes, { maxCells: 2 })).toThrow(/more than 2 cells/);
+  });
+
+  test("11 one shared string used by many cells is refused, one use is fine", () => {
+    const big = "x".repeat(50_000);
+    const bytes = (uses: number) => {
+      const files = unzipSync(one);
+      const rels = strFromU8(files["xl/_rels/workbook.xml.rels"]).replace("</Relationships>", `<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>`);
+      const sheetXml = strFromU8(files["xl/worksheets/sheet1.xml"]).replace(/<sheetData>.*<\/sheetData>/, `<sheetData>${Array.from({ length: uses }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}" t="s"><v>0</v></c></row>`).join("")}</sheetData>`);
+      const shared = `<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>${big}</t></si></sst>`;
+      return writeZip(
+        Object.entries(files)
+          .map(([name, data]) => ({ name, data: name === "xl/_rels/workbook.xml.rels" ? rels : name === "xl/worksheets/sheet1.xml" ? sheetXml : data }))
+          .concat([{ name: "xl/sharedStrings.xml", data: shared }]),
+        withLimits(),
+      );
+    };
+    const caps = { maxTextChars: 100_000 };
+    expect(readXlsx(bytes(2), caps).model.sheets[0].cells.A2).toEqual({ value: big });
+    expect(() => readXlsx(bytes(3), caps)).toThrow(/more than 100000 characters of cell text/);
+    expect(() => readXlsx(bytes(300), caps)).toThrow(FormatError);
+  });
+
+  test("11 a repeated cell or row counts its text in every copy", () => {
+    const big = "y".repeat(50_000);
+    const caps = { maxTextChars: 100_000 };
+    const cell = `<table:table-cell office:value-type="string"><text:p>${big}</text:p></table:table-cell>`;
+    expect(() => readOds(ods(table(`<table:table-row>${cell}</table:table-row>`)), caps)).not.toThrow();
+    expect(() => readOds(ods(table(`<table:table-row>${cell.replace("<table:table-cell ", '<table:table-cell table:number-columns-repeated="3" ')}</table:table-row>`)), caps)).toThrow(/characters of cell text/);
+    expect(() => readOds(ods(table(`<table:table-row table:number-rows-repeated="3">${cell}</table:table-row>`)), caps)).toThrow(/characters of cell text/);
+    expect(() => readOds(ods(table(`<table:table-row table:number-rows-repeated="1000"><table:table-cell table:number-columns-repeated="1000" office:value-type="string" office:string-value="${big}"/></table:table-row>`)), caps)).toThrow(/characters of cell text/);
   });
 
   test("9 a relationship that leaves the package, or points nowhere, is refused or skipped", () => {

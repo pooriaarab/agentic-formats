@@ -1,4 +1,4 @@
-import { FormatError, withLimits, type Limits } from "./limits.js";
+import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import { parseRef, refOf, sortedRefs, type Cell, type CellValue, type ReadResult, type Sheet, type Workbook, type WriteResult } from "./model.js";
 import { REL_NS, XML_HEADER, contentTypesXml, readOoxmlPackage, relsXml } from "./ooxml.js";
 import { checkWorkbook, hasContent, isBooleanLiteral, isoToSerial } from "./spreadsheet.js";
@@ -34,12 +34,20 @@ export function writeXlsx(book: Workbook, limits?: Partial<Limits>): WriteResult
     if (at < 0) at = formats.push(format) - 1;
     return at + 1;
   };
+  const chargeTotal = capped(caps.maxTotalBytes, `the export passes ${caps.maxTotalBytes} bytes while it is written`);
   const sheets = book.sheets.map((sheet) => {
+    // A running cap, so a model with huge cells stops before the whole sheet exists as one string.
+    const chargeSheet = capped(caps.maxEntryBytes, `the export passes ${caps.maxEntryBytes} bytes in one sheet while it is written`);
     const rows = new Map<number, string[]>();
     for (const ref of sortedRefs(sheet)) {
       if (!hasContent(sheet.cells[ref])) continue;
       const row = parseRef(ref)!.row;
-      rows.set(row, [...(rows.get(row) ?? []), cellXml(ref, sheet.cells[ref], xf)]);
+      const xml = cellXml(ref, sheet.cells[ref], xf);
+      chargeSheet(xml.length);
+      chargeTotal(xml.length);
+      const inRow = rows.get(row);
+      if (inRow) inRow.push(xml);
+      else rows.set(row, [xml]);
     }
     const data = [...rows].map(([row, cells]) => `<row r="${row}">${cells.join("")}</row>`).join("");
     return `${XML_HEADER}<worksheet xmlns="${MAIN}"><sheetData>${data}</sheetData></worksheet>`;
@@ -138,6 +146,8 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   }
 
   let cellCount = 0;
+  // A shared string is one string in memory but fills every cell that points to it, so each use counts.
+  const chargeText = capped(caps.maxTextChars, `the workbook has more than ${caps.maxTextChars} characters of cell text`);
   const sheets: Sheet[] = [];
   for (const entry of elementsOf(childOf(workbook, "sheets"))) {
     const rel = workbookRels.get(entry.attrs["r:id"] ?? "");
@@ -180,6 +190,7 @@ export function readXlsx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
         }
         const format = formatOfStyle[Number(c.attrs.s ?? 0)];
         if (value === undefined && formula === undefined && !(format && c.attrs.s)) continue;
+        chargeText((typeof value === "string" ? value.length : 0) + (formula?.length ?? 0));
         if (++cellCount > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the workbook has more than ${caps.maxCells} cells`);
         cells[refOf(at.column, at.row)] = { ...(value !== undefined ? { value } : {}), ...(formula !== undefined ? { formula } : {}), ...(format ? { format } : {}) };
       }
