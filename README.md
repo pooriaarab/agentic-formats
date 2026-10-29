@@ -32,8 +32,9 @@ npx agentic-formats mcp
 
 The first line needs a `report.odt` in the current folder. Use any ODT file you have. To make one
 from a Word file, run `npx agentic-formats convert draft.docx report.odt`. The second line reads
-the `report.docx` that the first line writes. `mcp` starts the MCP server and waits for a client on
-stdin, so it prints nothing in a terminal. Run `npx agentic-formats-mcp --help` for its options.
+the `report.docx` that the first line writes. `mcp` starts the MCP server. It prints one line on
+stderr and then waits for a client on stdin. To see the server's options, run
+`npx -p agentic-formats agentic-formats-mcp --help`.
 
 `convert` picks the formats from the file extensions and prints JSON: the files, the sizes, and
 `warnings` (each one names content that was lost). It refuses to replace a file unless you pass
@@ -45,8 +46,8 @@ The MCP server has three tools: `inspect_file`, `read_model` (the file as neutra
 `convert_file`. Every path stays inside one folder. With no variable set, that folder is the
 working folder of the server. Set `AGENTIC_FORMATS_ROOT` to choose another folder (`/` allows the
 whole disk). The server stops with an error at start if the working folder is `/` or your home
-folder and you set no `AGENTIC_FORMATS_ROOT`. A path that leaves the folder, by `..` or by a link, is refused. To allow any path,
-set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`; the server then says so on stderr. An empty variable, a
+folder and you set no `AGENTIC_FORMATS_ROOT`. A path that leaves the folder, by `..` or by a link,
+is refused. To allow any path, set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`; the server then says so on stderr. An empty variable, a
 value other than `1`, or both variables together stops the server with an error. The CLI is not
 limited: a person at a shell chooses the paths. Add the server to Claude Code with `.mcp.json`:
 

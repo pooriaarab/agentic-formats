@@ -11,7 +11,9 @@ Usage: agentic-formats-mcp [--help | --version]
 Environment:
   AGENTIC_FORMATS_ROOT             Limit every path to this folder instead of the working folder.
                                    The server refuses to start in / or in the home folder without it.
-  AGENTIC_FORMATS_UNSAFE_ANY_PATH  Set to 1 to allow any path. An empty variable is an error.
+                                   An empty value is an error.
+  AGENTIC_FORMATS_UNSAFE_ANY_PATH  Set to 1 to allow any path. Any other value is an error, and so
+                                   is setting it together with AGENTIC_FORMATS_ROOT.
 
 Flags:
   --help, -h       Print this help and exit.
@@ -23,6 +25,9 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log(HELP);
 } else if (args.includes("--version") || args.includes("-V")) {
   console.log(VERSION);
+} else if (args.length > 0) {
+  console.error(`agentic-formats-mcp: unknown argument "${args[0]}". Run with --help to see the options.`);
+  process.exit(2);
 } else {
   startMcpFromEnv().catch((error: unknown) => {
     console.error(describeError(error) ?? (error instanceof Error ? error.message : String(error)));

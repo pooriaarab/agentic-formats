@@ -25,7 +25,21 @@ describe("built package", () => {
     expect(help.stdout).toContain("Usage: agentic-formats-mcp");
     const ver = spawnSync("node", [bin, "--version"], { encoding: "utf8", timeout: 5000 });
     expect(ver.error).toBeUndefined();
+    expect(ver.status).toBe(0);
     expect(ver.stdout.trim()).toBe(version);
+  });
+
+  test("the MCP bin reports a bad environment in one line, not a stack trace, and refuses an unknown flag", () => {
+    const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
+    const bad = spawnSync("node", [bin], { encoding: "utf8", timeout: 5000, env: { ...process.env, AGENTIC_FORMATS_ROOT: "" } });
+    expect(bad.error).toBeUndefined();
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain("AGENTIC_FORMATS_ROOT is set but empty");
+    expect(bad.stderr).not.toContain("    at ");
+    const flag = spawnSync("node", [bin, "--hlep"], { encoding: "utf8", timeout: 5000 });
+    expect(flag.error).toBeUndefined();
+    expect(flag.status).toBe(2);
+    expect(flag.stderr).toContain('unknown argument "--hlep"');
   });
 
   test("the MCP server starts over stdio", async () => {
