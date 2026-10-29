@@ -45,11 +45,12 @@ Errors go to stderr and the exit code is 1.
 The MCP server has three tools: `inspect_file`, `read_model` (the file as neutral JSON), and
 `convert_file`. Every path stays inside one folder. With no variable set, that folder is the
 working folder of the server. Set `AGENTIC_FORMATS_ROOT` to choose another folder (`/` allows the
-whole disk). The server stops with an error at start if the working folder is `/` or your home
-folder and you set no `AGENTIC_FORMATS_ROOT`. A path that leaves the folder, by `..` or by a link,
-is refused. To allow any path, set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`; the server then says so on stderr. An empty variable, a
-value other than `1`, or both variables together stops the server with an error. The CLI is not
-limited: a person at a shell chooses the paths. Add the server to Claude Code with `.mcp.json`:
+whole disk). With no `AGENTIC_FORMATS_ROOT` and no `AGENTIC_FORMATS_UNSAFE_ANY_PATH`, the server
+stops with an error at start if the working folder is `/` or your home folder. A path that leaves
+the folder, by `..` or by a link, is refused. To allow any path, set
+`AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`; the server then says so on stderr. An empty variable, a value
+other than `1`, or both variables together stops the server with an error. The CLI is not limited:
+a person at a shell chooses the paths. Add the server to Claude Code with `.mcp.json`:
 
 ```json
 { "mcpServers": { "agentic-formats": { "command": "npx", "args": ["-y", "agentic-formats", "mcp"], "env": { "AGENTIC_FORMATS_ROOT": "/path/to/folder" } } } }

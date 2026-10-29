@@ -10,7 +10,8 @@ Usage: agentic-formats-mcp [--help | --version]
 
 Environment:
   AGENTIC_FORMATS_ROOT             Limit every path to this folder instead of the working folder.
-                                   The server refuses to start in / or in the home folder without it.
+                                   Without it, and without the variable below, the server refuses
+                                   to start in / or in the home folder.
                                    An empty value is an error.
   AGENTIC_FORMATS_UNSAFE_ANY_PATH  Set to 1 to allow any path. Any other value is an error, and so
                                    is setting it together with AGENTIC_FORMATS_ROOT.
