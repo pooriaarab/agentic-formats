@@ -74,9 +74,9 @@ const pick = <T>(r: () => number, items: T[]): T => items[Math.floor(r() * items
 const HOSTILE = ["NaN", "Infinity", "1e999", "-1", "0", "-0", "99999999999999", "4294967296", "", " ", "__proto__", "constructor", "../x", "a".repeat(3000), "\u0000", "0x10", "1e-999", "1e999cm", "-5pt", "99999999999pt", "1e308", "9007199254740993", "100%", "#zzzzzz", "rId1", "1048577", "16385", "-2147483649", "0.5", "true", "text:p"];
 
 /** Unpack, change one XML part with `edit`, and pack it again with no checks, so the reader sees what the edit made. */
-function withPart(bytes: Uint8Array, r: () => number, edit: (xml: string) => string): Uint8Array {
+function withPart(bytes: Uint8Array, r: () => number, edit: (xml: string) => string, part?: string): Uint8Array {
   const files = unzipSync(bytes);
-  const name = pick(r, Object.keys(files).filter(isXmlPart));
+  const name = part ?? pick(r, Object.keys(files).filter(isXmlPart));
   const out: Record<string, [Uint8Array, { level: 0 | 6 }]> = {};
   for (const [n, data] of Object.entries(files)) out[n] = [n === name ? strToU8(edit(strFromU8(data))) : data, { level: n === "mimetype" ? 0 : 6 }];
   return zipSync(out);
@@ -275,14 +275,22 @@ describe("fuzz shared parts, nesting, and the zip", () => {
     }
   });
 
-  test("2 nesting past the depth cap is refused, and a deep tree just under it reads", () => {
+  test("2 nesting past the depth cap is refused, and a deep tree under it reads", () => {
     for (const f of formats) {
-      for (const depth of [90, 101, 5000]) {
-        const bytes = withPart(f.bytes, rng(depth), (xml) => {
-          const root = /<([\w:.-]+)[\s>]/.exec(xml.replace(/<\?[^>]*\?>/, ""))?.[1] ?? "a";
-          return xml.replace(/(<[\w:.-]+[^>]*>)/, `$1${`<${root}>`.repeat(depth)}${`</${root}>`.repeat(depth)}`);
-        });
+      for (const depth of [40, 101, 5000]) {
+        const main = { odt: "content.xml", ods: "content.xml", odp: "content.xml", docx: "word/document.xml", xlsx: "xl/worksheets/sheet1.xml", pptx: "ppt/slides/slide1.xml" }[f.name]!;
+        const bytes = withPart(
+          f.bytes,
+          rng(depth),
+          (xml) => {
+            const root = /<([\w:.-]+)[\s>]/.exec(xml.replace(/<\?[^>]*\?>/, ""))?.[1] ?? "a";
+            return xml.replace(/(<[\w:.-]+[^>]*>)/, `$1${`<${root}>`.repeat(depth)}${`</${root}>`.repeat(depth)}`);
+          },
+          main,
+        );
         check(`${f.name} depth ${depth}`, () => f.read(bytes));
+        if (depth === 40) expect(() => f.read(bytes), `${f.name} depth ${depth}`).not.toThrow();
+        else expect(() => f.read(bytes), `${f.name} depth ${depth}`).toThrow(FormatError);
       }
     }
   });
@@ -310,7 +318,7 @@ describe("fuzz shared parts, nesting, and the zip", () => {
     }
   });
 
-  test("5 a zip that packs past the ratio and a zip of zips", () => {
+  test("5 a zip that packs past the ratio is refused", () => {
     for (const f of formats) {
       const files = unzipSync(f.bytes);
       const name = Object.keys(files).find((n) => isXmlPart(n) && n !== "[Content_Types].xml")!;
