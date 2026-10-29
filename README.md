@@ -12,8 +12,9 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 > `AGENTIC_FORMATS_ROOT`. To allow any path, set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`. An empty
 > variable is an error.
 
-> Status: 0.1.0. The first release. The neutral models, the input guards, all six formats (ODT, DOCX,
-> ODS, XLSX, ODP, PPTX), the CLI, and the MCP server work. See [CHANGELOG.md](CHANGELOG.md).
+> Status: 0.2.0. The neutral models, the input guards, all six formats (ODT, DOCX, ODS, XLSX, ODP,
+> PPTX), the CLI, and the MCP server work. A replaced file is written atomically.
+> See [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
