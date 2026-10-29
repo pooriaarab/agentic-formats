@@ -181,7 +181,8 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
   collect(content);
   if (stylesPart) collect(stylesPart);
   const formatOfStyle = (name: string | undefined): string | undefined => {
-    for (let n = name, hops = 0; n && hops < 20; n = cellStyles.get(n)?.parent, hops++) {
+    for (let n = name, hops = 0; n; n = cellStyles.get(n)?.parent, hops++) {
+      if (hops >= caps.maxStyleDepth) throw new FormatError("LIMIT_EXCEEDED", `a style has more than ${caps.maxStyleDepth} parents`);
       const data = cellStyles.get(n)?.data;
       if (data !== undefined) return dataFormats.get(data);
     }
@@ -227,6 +228,7 @@ export function readOds(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     const raw = c.attrs["table:formula"];
     if (raw !== undefined) {
       if (raw.length > MAX_FORMULA) throw new FormatError("LIMIT_EXCEEDED", `a formula is longer than ${MAX_FORMULA} characters`);
+      chargeText(raw.length);
       formula = raw.startsWith("of:=") ? fromOpenFormula(raw.slice(4)) : undefined;
       if (formula === undefined) warn("a formula that is not in OpenFormula A1 form was read as its value");
       else if (isBooleanLiteral(formula, value)) formula = undefined;

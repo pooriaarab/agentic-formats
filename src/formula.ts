@@ -10,7 +10,6 @@ const CELL = `\\$?[A-Z]{1,3}\\$?[0-9]+`;
 // A reference is not part of a longer name, and a name before `(` is a function such as LOG10.
 const A1_REF = `(?<![A-Za-z0-9_.$'])(?:(${SHEET})!)?(${CELL})(?::(${CELL}))?(?![A-Za-z0-9_(])`;
 const A1 = new RegExp(`${STRING}|${A1_REF}|,`, "g");
-const OF = new RegExp(`${STRING}|\\[([^\\]]*)\\]|;`, "g");
 const OF_PART = new RegExp(`^(?:\\$?(${SHEET}))?\\.(${CELL})$`);
 
 const unquote = (name: string): string => (name.startsWith("'") ? name.slice(1, -1).replaceAll("''", "'") : name);
@@ -26,21 +25,56 @@ export function toOpenFormula(formula: string): string {
   });
 }
 
-/** OpenFormula text, without the `of:=` prefix, to A1 text. Returns undefined for a reference it cannot map. */
+/**
+ * OpenFormula text, without the `of:=` prefix, to A1 text. Returns undefined for a reference it cannot map.
+ * One pass, so the time is linear in the length: a string literal ends at its closing quote, and a
+ * reference ends at the next `]`, or is not a reference when a `[` comes first.
+ */
 export function fromOpenFormula(formula: string): string | undefined {
+  let out = "";
   let failed = false;
-  const text = formula.replace(OF, (match, ref?: string) => {
-    if (match === ";") return ",";
-    if (ref === undefined) return match;
-    const parts = ref.split(":");
-    const mapped = parts.map((p) => OF_PART.exec(p));
-    if (parts.length > 2 || mapped.some((m) => !m)) {
-      failed = true;
-      return match;
+  let i = 0;
+  while (i < formula.length) {
+    const c = formula[i];
+    if (c === '"') {
+      let end = i + 1;
+      for (;;) {
+        const quote = formula.indexOf('"', end);
+        if (quote < 0) {
+          end = formula.length;
+          break;
+        }
+        if (formula[quote + 1] === '"') end = quote + 2;
+        else {
+          end = quote + 1;
+          break;
+        }
+      }
+      out += formula.slice(i, end);
+      i = end;
+    } else if (c === "[") {
+      let end = i + 1;
+      while (end < formula.length && formula[end] !== "]" && formula[end] !== "[") end++;
+      if (formula[end] !== "]") {
+        out += c;
+        i++;
+        continue;
+      }
+      const ref = formula.slice(i + 1, end);
+      const parts = ref.split(":");
+      const mapped = parts.map((p) => OF_PART.exec(p));
+      if (parts.length > 2 || mapped.some((m) => !m)) {
+        failed = true;
+        out += formula.slice(i, end + 1);
+      } else {
+        const [first, second] = mapped as RegExpExecArray[];
+        out += `${first[1] ? `${quote(unquote(first[1]))}!` : ""}${first[2]}${second ? `:${second[2]}` : ""}`;
+      }
+      i = end + 1;
+    } else {
+      out += c === ";" ? "," : c;
+      i++;
     }
-    const [first, second] = mapped as RegExpExecArray[];
-    const sheet = first[1] ? `${quote(unquote(first[1]))}!` : "";
-    return `${sheet}${first[2]}${second ? `:${second[2]}` : ""}`;
-  });
-  return failed ? undefined : text;
+  }
+  return failed ? undefined : out;
 }

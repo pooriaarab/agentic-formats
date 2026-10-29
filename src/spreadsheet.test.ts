@@ -327,6 +327,24 @@ describe("hostile files", () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 
+  test("12 many formulas of near the cap that are built to make a regex backtrack are read in linear time", { timeout: 60_000 }, () => {
+    const cell = (formula: string) => `<table:table-row><table:table-cell office:value-type="float" office:value="1" table:formula="of:=${formula.replaceAll('"', "&quot;")}"/></table:table-row>`;
+    // Random letters keep the part from packing past the ratio cap.
+    const letters = (n: number) => Array.from({ length: n }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26)));
+    const rows = (make: () => string) => table(Array.from({ length: 200 }, () => cell(make())).join(""));
+    const unclosed = () => `[x];${letters(4050).map((c) => `[${c}`).join("")}`;
+    const quotes = () => `"${letters(2700).map((c) => `${c}""`).join("")}`;
+    for (const make of [unclosed, quotes]) {
+      const started = Date.now();
+      readOds(ods(rows(make)));
+      expect(Date.now() - started).toBeLessThan(20_000);
+    }
+    expect(fromOpenFormula('IF([.A1]>0;"a;[.B2]";[.C3])')).toBe('IF(A1>0,"a;[.B2]",C3)');
+    expect(fromOpenFormula("SUM([$'My Sheet'.A1:.B2])")).toBe("SUM('My Sheet'!A1:B2)");
+    expect(fromOpenFormula("[.A1:.B2:.C3]")).toBeUndefined();
+    expect(fromOpenFormula("[[.A1]")).toBe("[A1");
+  });
+
   test("12 text:s runs in a cell count against the text cap before the string is made", () => {
     const cell = (n: number) => `<table:table-row><table:table-cell office:value-type="string"><text:p>a${'<text:s text:c="1000"/>'.repeat(n)}b</text:p></table:table-cell></table:table-row>`;
     const caps = { maxTextChars: 10_000 };
