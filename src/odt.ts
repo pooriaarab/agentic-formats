@@ -95,7 +95,21 @@ function imageXml(node: InlineImage, out: Out): string {
   return `<draw:frame draw:name="${name}" text:anchor-type="as-char" svg:width="${cm(w)}" svg:height="${cm(h)}"><draw:image xlink:href="${path}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/>${alt}</draw:frame>`;
 }
 
-function runXml(run: TextRun, out: Out): string {
+/** What a text run needs from its file: the span styles it asks for, and a place to report a dropped link. */
+export interface RunContext {
+  spans: Map<string, string>;
+  warnings: Set<string>;
+  /** Counts the text of each run and the length of each link as it is written, so a model that holds one string many times stops at the cap. */
+  charge: (chars: number) => void;
+}
+
+/** The automatic styles for the spans that `runXml` named. */
+export const spanStylesXml = (spans: Map<string, string>): string =>
+  [...spans]
+    .map(([key, name]) => `<style:style style:name="${name}" style:family="text"><style:text-properties ${key.split(",").map((m) => MARK_PROPS[m as Mark]).join(" ")}/></style:style>`)
+    .join("");
+
+export function runXml(run: TextRun, out: RunContext): string {
   checkRun(run);
   out.charge(run.text.length + (run.href?.length ?? 0));
   // The worst case counts before the string exists: a newline grows to 18 characters, and a link is written once.
@@ -236,11 +250,9 @@ export function writeOdt(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
     bytes: capped(caps.maxTotalBytes, `the document passes ${caps.maxTotalBytes} bytes while it is written`),
   };
   const body = doc.blocks.map((b) => blockXml(b, out)).join("\n");
-  const spanStyles = [...out.spans].map(
-    ([key, name]) => `<style:style style:name="${name}" style:family="text"><style:text-properties ${key.split(",").map((m) => MARK_PROPS[m as Mark]).join(" ")}/></style:style>`,
-  );
+  const spanStyles = spanStylesXml(out.spans);
   const content =
-    `${XML_HEADER}<office:document-content ${ODF_NS_ATTRS} office:version="1.3"><office:automatic-styles>${spanStyles.join("")}` +
+    `${XML_HEADER}<office:document-content ${ODF_NS_ATTRS} office:version="1.3"><office:automatic-styles>${spanStyles}` +
     `<text:list-style style:name="Bullets">${LIST_LEVELS(false)}</text:list-style><text:list-style style:name="Numbering">${LIST_LEVELS(true)}</text:list-style>` +
     `</office:automatic-styles><office:body><office:text>${body}</office:text></office:body></office:document-content>`;
   const bytes = writeOdfPackage({ mime: ODT_MIME, content, styles: STYLES, title: doc.title, images: out.images }, caps);
@@ -307,7 +319,7 @@ interface StyleInfo {
   auto: boolean;
 }
 
-function marksOfProps(props: Record<string, string>): Mark[] {
+export function marksOfProps(props: Record<string, string>): Mark[] {
   const marks: Mark[] = [];
   if (/^(bold|[6-9]00)$/.test(props["fo:font-weight"] ?? "")) marks.push("bold");
   if (props["fo:font-style"] === "italic") marks.push("italic");

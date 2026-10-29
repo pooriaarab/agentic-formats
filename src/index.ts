@@ -43,3 +43,5 @@ export { readXlsx, writeXlsx } from "./xlsx.js";
 export { fromOpenFormula, toOpenFormula } from "./formula.js";
 export { isoToSerial, serialToIso } from "./spreadsheet.js";
 export { readDocx, writeDocx } from "./docx.js";
+export { ODP_MIME, readOdp, writeOdp } from "./odp.js";
+export { readPptx, writePptx } from "./pptx.js";

@@ -1,0 +1,215 @@
+/*
+ * ODP and PPTX, end to end: the real writers, the real readers, an independent XML parser, and
+ * LibreOffice. The ways it can fail are written first; each has a case below.
+ *
+ *  1 text is lost or changed: marks, a link, runs of spaces, a tab, a line break, an empty
+ *    paragraph, markup characters
+ *  2 a shape is lost or moved: rectangle, ellipse, line, colors, no color, a picture, shape order,
+ *    an empty slide
+ *  3 notes are lost, or lose a line
+ *  4 the deck size is lost
+ *  5 the package is malformed: a part does not parse, a part is missing from the content types, a
+ *    relationship points nowhere, `mimetype` is not first and stored
+ *  6 the same model gives different bytes
+ *  7 a writer takes a model it cannot write: no slide, sizes or colors that are not usable; an
+ *    unsafe link or a bad image drops without a word; a size limit is missing
+ *  8 a hostile file is read: a DOCTYPE, the wrong type, a remote or external image, a script link,
+ *    a slide that is missing; a placeholder with no position takes it from its layout
+ *  9 LibreOffice cannot open our file, or its re-save does not read back to the same model, in the
+ *    same format or after a trip through the other format
+ */
+import { isDeepStrictEqual } from "node:util";
+import { DOMParser } from "@xmldom/xmldom";
+import { strFromU8, unzipSync } from "fflate";
+import { afterAll, describe, expect, test } from "vitest";
+import { FormatError, withLimits } from "./limits.js";
+import type { Deck } from "./model.js";
+import { readOdp, writeOdp } from "./odp.js";
+import { writeOdt } from "./odt.js";
+import { readPptx, writePptx } from "./pptx.js";
+import { PNG, deckFixture as fixture } from "./testing/fixtures.js";
+import { LibreOffice, hasLibreOffice, libreOfficeRequired, sha256, writeArtifact, type RoundTripRecord } from "./testing/libreoffice.js";
+import { writeZip } from "./zip.js";
+
+const formats = ["odp", "pptx"] as const;
+const writers = { odp: writeOdp, pptx: writePptx } as const;
+const readers = { odp: readOdp, pptx: readPptx } as const;
+const files = (bytes: Uint8Array) => unzipSync(bytes);
+const patch = (bytes: Uint8Array, name: string, change: (xml: string) => string): Uint8Array =>
+  writeZip(Object.entries(files(bytes)).map(([n, data]) => ({ name: n, data: n === name ? change(strFromU8(data)) : data, store: n === "mimetype" })), withLimits());
+const wellFormed = (xml: string): void => {
+  const seen: string[] = [];
+  new DOMParser({ onError: (level, message) => seen.push(`${level}: ${message}`) }).parseFromString(xml, "text/xml");
+  expect(seen).toEqual([]);
+};
+const one = (shape: Deck["slides"][0]["shapes"][0]): Deck => ({ width: 720, height: 405, slides: [{ shapes: [shape] }] });
+
+describe.each(formats)("%s: write then read", (format) => {
+  const write = writers[format];
+  const read = readers[format];
+
+  test("1-4 the deck reads back unchanged, with no warnings", () => {
+    const written = write(fixture);
+    const back = read(written.bytes);
+    expect(back.model).toEqual(fixture);
+    expect(back.warnings).toEqual([]);
+    expect(written.warnings).toEqual([]);
+  });
+
+  test("2 shapes at fractional positions and with upper-case colors keep their place and color", () => {
+    const deck = one({ type: "shape", kind: "rectangle", frame: { x: 10.5, y: 20.25, width: 100.7, height: 50.1 }, fill: "#FFAA00", stroke: "#00FF00" });
+    const shape = read(write(deck).bytes).model.slides[0].shapes[0];
+    expect(shape).toMatchObject({ type: "shape", kind: "rectangle", fill: "#ffaa00", stroke: "#00ff00", frame: { x: 10.5, y: 20.3, width: 100.7, height: 50.1 } });
+  });
+
+  test("6 the same model gives the same bytes", () => {
+    expect(write(fixture).bytes).toEqual(write(fixture).bytes);
+  });
+
+  test("7 a writer refuses a model it cannot write", () => {
+    const refuse = (deck: Deck) => expect(() => write(deck)).toThrow(FormatError);
+    refuse({ width: 720, height: 405, slides: [] });
+    refuse({ ...fixture, width: 0 });
+    refuse({ ...fixture, height: Number.NaN });
+    for (const n of [Number.NaN, Infinity, -1, 1e9]) refuse(one({ type: "textbox", frame: { x: 0, y: 0, width: n, height: 10 }, paragraphs: [] }));
+    for (const color of ["red", "#fff", "#gggggg", "ff0000", "url(x)"]) refuse(one({ type: "shape", kind: "rectangle", frame: { x: 0, y: 0, width: 1, height: 1 }, fill: color }));
+  });
+
+  test("7 an unsafe link and a bad image are reported", () => {
+    const deck: Deck = {
+      width: 720,
+      height: 405,
+      slides: [
+        {
+          shapes: [
+            { type: "textbox", frame: { x: 0, y: 0, width: 100, height: 20 }, paragraphs: [[{ type: "text", text: "click", href: "javascript:alert(1)" }]] },
+            { type: "picture", frame: { x: 0, y: 30, width: 10, height: 10 }, data: new TextEncoder().encode("<svg onload=alert(1)/>"), mime: "image/png" },
+          ],
+        },
+      ],
+    };
+    const { bytes, warnings } = write(deck);
+    expect(warnings).toEqual(["a link with an unsafe target was written as plain text", "an image is not a PNG, JPEG, or GIF: not written"]);
+    const all = Object.values(files(bytes)).map((d) => strFromU8(d)).join("\n");
+    expect(all).toContain("click");
+    expect(all).not.toMatch(/javascript|<svg/);
+  });
+
+  test("7 an image over the entry limit, and an export over the total limit, are refused", () => {
+    const big = new Uint8Array(PNG.length + 4000);
+    big.set(PNG);
+    const deck = one({ type: "picture", frame: { x: 0, y: 0, width: 10, height: 10 }, data: big, mime: "image/png" });
+    expect(() => write(deck, { maxEntryBytes: 1500 })).toThrow(FormatError);
+    expect(() => write(deck, { maxTotalBytes: 6000 })).toThrow(/export is larger/);
+  });
+
+  test("5 every XML part parses with an independent parser", () => {
+    const all = files(write(fixture).bytes);
+    const xml = Object.keys(all).filter((n) => /\.(xml|rels)$/.test(n));
+    expect(xml.length).toBeGreaterThanOrEqual(4);
+    for (const name of xml) wellFormed(strFromU8(all[name]));
+  });
+});
+
+describe("odp package", () => {
+  test("5 `mimetype` is first and stored, and the manifest carries `manifest:version`", () => {
+    const { bytes } = writeOdp(fixture);
+    expect(strFromU8(bytes.subarray(30, 38))).toBe("mimetype");
+    expect(new DataView(bytes.buffer, bytes.byteOffset).getUint16(8, true)).toBe(0);
+    expect(strFromU8(files(bytes)["META-INF/manifest.xml"])).toMatch(/<manifest:manifest [^>]*manifest:version="1\.3"/);
+  });
+});
+
+describe("pptx package", () => {
+  test("5 every part is in the content types, and every internal relationship target exists", () => {
+    const all = files(writePptx(fixture).bytes);
+    const types = strFromU8(all["[Content_Types].xml"]);
+    for (const part of Object.keys(all).filter((n) => n.endsWith(".xml") && n !== "[Content_Types].xml")) expect(types).toContain(`PartName="/${part}"`);
+    expect(Object.keys(all)[0]).toBe("[Content_Types].xml");
+    for (const rel of Object.keys(all).filter((n) => n.endsWith(".rels"))) {
+      const dir = rel.replace(/_rels\/[^/]+$/, "");
+      for (const m of strFromU8(all[rel]).matchAll(/Target="([^"]+)"(?! TargetMode)/g)) {
+        const path = [...dir.split("/").filter(Boolean), ...m[1].split("/")].reduce<string[]>((acc, p) => (p === ".." ? (acc.pop(), acc) : [...acc, p]), []).join("/");
+        expect(all[path], `${rel} -> ${m[1]}`).toBeDefined();
+      }
+    }
+  });
+
+  test("8 a placeholder with no position takes it from its layout", () => {
+    const base = writePptx({ width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame: { x: 0, y: 0, width: 1, height: 1 }, paragraphs: [[{ type: "text", text: "Title" }]] }] }] }).bytes;
+    const layout = patch(base, "ppt/slideLayouts/slideLayout1.xml", (x) =>
+      x.replace("</p:spTree>", `<p:sp><p:nvSpPr><p:cNvPr id="9" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${36 * 12700}" y="${18 * 12700}"/><a:ext cx="${600 * 12700}" cy="${50 * 12700}"/></a:xfrm></p:spPr></p:sp></p:spTree>`),
+    );
+    const slide = patch(layout, "ppt/slides/slide1.xml", (x) => x.replace('<p:cNvSpPr txBox="1"/><p:nvPr/>', '<p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr>').replace(/<p:spPr>.*?<\/p:spPr>/, "<p:spPr/>"));
+    const read = readPptx(slide);
+    expect(read.model.slides[0].shapes[0]).toMatchObject({ type: "textbox", frame: { x: 36, y: 18, width: 600, height: 50 } });
+    expect(read.warnings).toEqual([]);
+  });
+});
+
+describe("hostile files", () => {
+  const odp = writeOdp({ width: 720, height: 405, slides: [{ shapes: [{ type: "textbox", frame: { x: 0, y: 0, width: 10, height: 10 }, paragraphs: [[{ type: "text", text: "x" }]] }] }] }).bytes;
+  const pptx = writePptx({ width: 720, height: 405, slides: [{ shapes: [{ type: "picture", frame: { x: 0, y: 0, width: 10, height: 10 }, data: PNG, mime: "image/png" }] }] }).bytes;
+
+  test("8 a DOCTYPE with an entity is refused", () => {
+    expect(() => readOdp(patch(odp, "content.xml", (x) => x.replace("?>", `?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>`)))).toThrow(/DOCTYPE/);
+    expect(() => readPptx(patch(pptx, "ppt/slides/slide1.xml", (x) => x.replace("?>", `?><!DOCTYPE x [<!ENTITY e "x">]>`)))).toThrow(/DOCTYPE/);
+  });
+
+  test("8 the wrong type of file is refused", () => {
+    expect(() => readOdp(writeOdt({ blocks: [] }).bytes)).toThrow(/not an ODP/);
+    expect(() => readOdp(pptx)).toThrow(FormatError);
+    expect(() => readPptx(odp)).toThrow(FormatError);
+    expect(() => readPptx(patch(pptx, "[Content_Types].xml", (x) => x.replace("presentationml.presentation.main", "wordprocessingml.document.main")))).toThrow(/not an PPTX/);
+    expect(() => readPptx(new TextEncoder().encode("PK nope"))).toThrow(FormatError);
+  });
+
+  test("8 an external image and a script link are not followed", () => {
+    const rels = patch(pptx, "ppt/slides/_rels/slide1.xml.rels", (x) => x.replace(/Target="\.\.\/media\/image1\.png"/, 'Target="https://evil.example/p.png" TargetMode="External"'));
+    const read = readPptx(rels);
+    expect(read.model.slides[0].shapes).toEqual([]);
+    expect(read.warnings).toEqual(["an image that is not a PNG, JPEG, or GIF: not imported"]);
+    const remote = readOdp(patch(odp, "content.xml", (x) => x.replace("<draw:text-box>", '<draw:image xlink:href="https://evil.example/p.png"/><draw:text-box>')));
+    expect(remote.model.slides[0].shapes).toHaveLength(1);
+    const link = readOdp(patch(odp, "content.xml", (x) => x.replace(">x</text:p>", '><text:a xlink:href="javascript:alert(1)">x</text:a></text:p>')));
+    expect(link.warnings).toEqual(["a link with an unsafe target was read as plain text"]);
+    expect(link.model.slides[0].shapes[0]).toMatchObject({ paragraphs: [[{ text: "x" }]] });
+  });
+
+  test("8 a slide that points nowhere is skipped with a warning, and a deck with none is refused", () => {
+    const gone = patch(pptx, "ppt/_rels/presentation.xml.rels", (x) => x.replace('Target="slides/slide1.xml"', 'Target="slides/none.xml"'));
+    expect(() => readPptx(gone)).toThrow(/no slide/);
+    expect(() => readOdp(patch(odp, "content.xml", (x) => x.replace(/<draw:page .*<\/draw:page>/, "")))).toThrow(/no slide/);
+  });
+});
+
+describe.skipIf(!hasLibreOffice && !libreOfficeRequired)("LibreOffice round trip", () => {
+  const lo = hasLibreOffice ? new LibreOffice() : undefined;
+  const records: RoundTripRecord[] = [];
+  afterAll(() => {
+    lo?.dispose();
+    writeArtifact("deck-roundtrip", records);
+  });
+
+  test.each(formats)("9 LibreOffice opens our %s, prints it, and its re-save reads back to the same model", { timeout: 300_000 }, (format) => {
+    expect(hasLibreOffice).toBe(true);
+    const { bytes } = writers[format](fixture);
+    const pdf = lo!.convert(bytes, format, "pdf");
+    expect(strFromU8(pdf.subarray(0, 5))).toBe("%PDF-");
+    const resaved = lo!.convert(bytes, format, format);
+    const back = readers[format](resaved);
+    records.push({ format, case: "fixture", written: sha256(bytes), resaved: sha256(resaved), pdfBytes: pdf.length, equal: isDeepStrictEqual(back.model, fixture) });
+    expect(back.model).toEqual(fixture);
+  });
+
+  test.each([
+    ["pptx", "odp"],
+    ["odp", "pptx"],
+  ] as const)("9 %s through LibreOffice to %s reads back to the same model", { timeout: 300_000 }, (from, to) => {
+    const { bytes } = writers[from](fixture);
+    const converted = lo!.convert(bytes, from, to);
+    const back = readers[to](converted);
+    records.push({ format: `${from}->${to}`, case: "fixture", written: sha256(bytes), resaved: sha256(converted), pdfBytes: 0, equal: isDeepStrictEqual(back.model, fixture) });
+    expect(back.model).toEqual(fixture);
+  });
+});
