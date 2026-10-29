@@ -212,6 +212,68 @@ describe("a footnote that many references point to", () => {
   });
 });
 
+describe("a writer that gets one object in many places", () => {
+  const overCap = (doc: TextDoc, limits = { maxTotalBytes: 2_000_000 }) => {
+    const started = Date.now();
+    try {
+      writeDocx(doc, limits);
+    } catch (error) {
+      expect(error).toBeInstanceOf(FormatError);
+      expect((error as FormatError).code).toBe("LIMIT_EXCEEDED");
+      expect(Date.now() - started).toBeLessThan(5000);
+      return;
+    }
+    throw new Error("expected LIMIT_EXCEEDED");
+  };
+
+  test("10 a note of breaks, empty runs, and a rows of empty cells stop at the byte cap", () => {
+    const note = { type: "footnote" as const, content: Array.from({ length: 10_000 }, () => ({ type: "break" as const })) };
+    overCap({ blocks: [{ type: "paragraph", content: Array.from({ length: 10_000 }, () => note) }] });
+    const emptyRuns = { type: "footnote" as const, content: Array.from({ length: 10_000 }, () => ({ type: "text" as const, text: "" })) };
+    overCap({ blocks: [{ type: "paragraph", content: Array.from({ length: 10_000 }, () => emptyRuns) }] });
+    const row = Array.from({ length: 2000 }, () => [] as Block[]);
+    overCap({ blocks: [{ type: "table", rows: Array.from({ length: 5000 }, () => row) }] });
+  });
+
+  test("10 nested tables and lists that hold the level below twice stop at the byte cap", () => {
+    const table = (k: number): Block => {
+      if (k === 0) return para("x");
+      const inner = table(k - 1);
+      return { type: "table", rows: [[[inner], [inner]]] };
+    };
+    overCap({ blocks: [table(40)] });
+    const list = (k: number): Block => {
+      const inner = k === 0 ? undefined : (list(k - 1) as List);
+      return { type: "list", ordered: false, items: [{ content: [], ...(inner ? { sublist: inner } : {}) }, { content: [], ...(inner ? { sublist: inner } : {}) }] };
+    };
+    overCap({ blocks: [list(40)] });
+  });
+
+  test("10 a link target and an image description count when one run or image is used many times", () => {
+    const link = { type: "text" as const, text: "x", href: `https://example.org/${"a".repeat(100_000)}` };
+    overCap({ blocks: [{ type: "paragraph", content: Array.from({ length: 1000 }, () => link) }] }, { maxTotalBytes: 100_000_000, maxTextChars: 5_000_000 } as never);
+    const image = { type: "image" as const, data: PNG, mime: "image/png" as const, alt: "d".repeat(100_000) };
+    overCap({ blocks: [{ type: "paragraph", content: Array.from({ length: 1000 }, () => image) }] });
+  });
+
+  test("10 one image part named by many drawings counts its bytes for each drawing", () => {
+    const padded = new Uint8Array(10_000);
+    padded.set(PNG);
+    const drawings = (n: number) => ({ blocks: [{ type: "paragraph" as const, content: Array.from({ length: n }, () => ({ type: "image" as const, data: padded, mime: "image/png" as const })) }] });
+    const one = writeDocx(drawings(1)).bytes;
+    const many = patch(one, "word/document.xml", (x) => x.replace(/<w:p>(.*)<\/w:p>/, (_m, inner: string) => `<w:p>${inner.repeat(5)}</w:p>`));
+    expect(readDocx(many, { maxTotalBytes: 60_000 }).model.blocks).toHaveLength(1);
+    expect(() => readDocx(many, { maxTotalBytes: 40_000 })).toThrow(/images in the file add up to more than 40000 bytes/);
+  });
+
+  test("10 a list level outside 0 to 8 is moved into range, with a warning", () => {
+    const base = writeDocx({ blocks: [{ type: "list", ordered: false, items: [{ content: [text("a")] }] }] }).bytes;
+    const read = readDocx(patch(base, "word/document.xml", (x) => x.replace('<w:ilvl w:val="0"/>', '<w:ilvl w:val="1e9"/>')));
+    expect(read.model.blocks).toHaveLength(1);
+    expect(read.warnings).toEqual(["a list level outside 0 to 8 was moved into that range"]);
+  });
+});
+
 describe.skipIf(!hasLibreOffice && !libreOfficeRequired)("LibreOffice round trip", () => {
   const lo = hasLibreOffice ? new LibreOffice() : undefined;
   const records: RoundTripRecord[] = [];

@@ -71,8 +71,10 @@ interface Out {
   nums: boolean[]; // one entry per list; true when ordered
   notes: string[];
   warnings: Set<string>;
-  /** Counts the text of each run as it is written, so a model that holds one note many times stops at the cap. */
+  /** Counts the text of each run and the length of each link as it is written, so a model that holds one note many times stops at the cap. */
   charge: (chars: number) => void;
+  /** Counts the XML as each piece is made, so a model that holds one object many times fails before one string grows past the cap. */
+  bytes: (length: number) => void;
 }
 
 const nextId = (out: Out) => `rId${out.rels.length + 4}`; // rId1 to rId3 belong to styles, numbering, and footnotes
@@ -104,7 +106,7 @@ function imageXml(node: InlineImage, out: Out): string {
 }
 
 function runXml(run: TextRun, out: Out): string {
-  out.charge(run.text.length);
+  out.charge(run.text.length + (run.href?.length ?? 0));
   const href = run.href === undefined ? undefined : safeHref(run.href);
   if (run.href !== undefined && !href) out.warnings.add("a link with an unsafe target was written as plain text");
   const props = (href ? '<w:rStyle w:val="Hyperlink"/>' : "") + RPR_ORDER.filter((m) => run.marks?.includes(m)).map((m) => MARK_XML[m]).join("");
@@ -119,21 +121,25 @@ function runXml(run: TextRun, out: Out): string {
 function inlineXml(nodes: Inline[], out: Out): string {
   return nodes
     .map((node) => {
-      switch (node.type) {
-        case "text":
-          return runXml(node, out);
-        case "break":
-          return "<w:r><w:br/></w:r>";
-        case "image":
-          return imageXml(node, out);
-        case "footnote": {
-          const id = out.notes.length + 1;
-          out.notes.push(
-            `<w:footnote w:id="${id}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r>${inlineXml(node.content, out)}</w:p></w:footnote>`,
-          );
-          return `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="${id}"/></w:r>`;
+      const xml = ((): string => {
+        switch (node.type) {
+          case "text":
+            return runXml(node, out);
+          case "break":
+            return "<w:r><w:br/></w:r>";
+          case "image":
+            return imageXml(node, out);
+          case "footnote": {
+            const id = out.notes.length + 1;
+            const note = `<w:footnote w:id="${id}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r>${inlineXml(node.content, out)}</w:p></w:footnote>`;
+            out.bytes(note.length);
+            out.notes.push(note);
+            return `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="${id}"/></w:r>`;
+          }
         }
-      }
+      })();
+      out.bytes(xml.length);
+      return xml;
     })
     .join("");
 }
@@ -143,11 +149,13 @@ function listXml(list: List, depth: number, out: Out): string {
   const level = Math.min(depth, 8);
   const numId = out.nums.push(list.ordered);
   return list.items
-    .map(
-      (item) =>
+    .map((item) => {
+      const xml =
         `<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="${level}"/><w:numId w:val="${numId}"/></w:numPr></w:pPr>${inlineXml(item.content, out)}</w:p>` +
-        (item.sublist ? listXml(item.sublist, depth + 1, out) : ""),
-    )
+        (item.sublist ? listXml(item.sublist, depth + 1, out) : "");
+      out.bytes(xml.length);
+      return xml;
+    })
     .join("");
 }
 
@@ -158,7 +166,9 @@ function tableXml(table: Table, out: Out): string {
     `<w:tr>${header ? "<w:trPr><w:tblHeader/></w:trPr>" : ""}${Array.from({ length: columns }, (_, i) => {
       const blocks = (cells[i] ?? []).map((b) => blockXml(b, out)).join("");
       const last = cells[i]?.[cells[i].length - 1];
-      return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/></w:tcPr>${blocks}${!last || last.type === "table" ? "<w:p/>" : ""}</w:tc>`;
+      const tc = `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/></w:tcPr>${blocks}${!last || last.type === "table" ? "<w:p/>" : ""}</w:tc>`;
+      out.bytes(tc.length);
+      return tc;
     }).join("")}</w:tr>`;
   return (
     `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>${`<w:gridCol w:w="${width}"/>`.repeat(columns)}</w:tblGrid>` +
@@ -167,6 +177,12 @@ function tableXml(table: Table, out: Out): string {
 }
 
 function blockXml(block: Block, out: Out, depth = 0): string {
+  const xml = blockXmlOf(block, out, depth);
+  out.bytes(xml.length);
+  return xml;
+}
+
+function blockXmlOf(block: Block, out: Out, depth: number): string {
   switch (block.type) {
     case "paragraph":
       return `<w:p>${inlineXml(block.content, out)}</w:p>`;
@@ -184,7 +200,15 @@ function blockXml(block: Block, out: Out, depth = 0): string {
 /** Write a document as a Word file (.docx). */
 export function writeDocx(doc: TextDoc, limits?: Partial<Limits>): WriteResult {
   const caps = withLimits(limits);
-  const out: Out = { rels: [], media: [], nums: [], notes: [], warnings: new Set(), charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`) };
+  const out: Out = {
+    rels: [],
+    media: [],
+    nums: [],
+    notes: [],
+    warnings: new Set(),
+    charge: capped(caps.maxTextChars, `the document has more than ${caps.maxTextChars} characters of text`),
+    bytes: capped(caps.maxTotalBytes, `the document passes ${caps.maxTotalBytes} bytes while it is written`),
+  };
   const body = doc.blocks.map((b) => blockXml(b, out)).join("");
   const document =
     `${XML_HEADER}<w:document ${NS}><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
@@ -311,6 +335,7 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
     const data = target && !target.external ? pkg.files[target.target] : undefined;
     const sniffed = data ? sniffImage(data) : undefined;
     if (!data || !sniffed) return warnings.add("an image that is not a PNG, JPEG, or GIF: not imported"), [];
+    chargeImages(data.length);
     const extent = find(el, "wp:extent");
     const [w, h] = [Number(extent?.attrs.cx), Number(extent?.attrs.cy)].map((n) => (Number.isFinite(n) && n > 0 ? Math.round((n / EMU) * 10) / 10 : undefined));
     const docPr = find(el, "wp:docPr");
@@ -319,6 +344,8 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
   }
 
   const notes = new Map<string, Footnote>();
+  /** An image part is shared by every drawing that names it, so each drawing counts its bytes. */
+  const chargeImages = capped(caps.maxTotalBytes, `the images in the file add up to more than ${caps.maxTotalBytes} bytes`);
   /** Notes already placed. A note belongs to one reference; a repeat would copy its whole content again. */
   const placed = new Set<string>();
   const notesPart = partOf("footnotes");
@@ -398,7 +425,9 @@ export function readDocx(bytes: Uint8Array, limits?: Partial<Limits>): ReadResul
     const out: Block[] = [];
     const stack: { list: List; level: number; numId: string }[] = [];
     const item = (p: XmlElement, numId: string, ilvl: string): void => {
-      const level = Number(ilvl) || 0;
+      const asked = Number(ilvl) || 0;
+      const level = Math.min(8, Math.max(0, Math.trunc(asked)));
+      if (level !== asked) warnings.add("a list level outside 0 to 8 was moved into that range");
       const ordered = isOrdered(numId, ilvl);
       while (stack.length && stack[stack.length - 1].level > level) stack.pop();
       let top = stack[stack.length - 1];
