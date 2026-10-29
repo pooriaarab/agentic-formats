@@ -1,9 +1,10 @@
 import { cm, frameSize, lengthPt, sniffImage } from "./image.js";
-import { FormatError, withLimits, type Limits } from "./limits.js";
+import { FormatError, capped, withLimits, type Limits } from "./limits.js";
 import {
   MARKS,
   normalizeInline,
   normalizeTextDoc,
+  textLength,
   type Block,
   type Footnote,
   type Heading,
@@ -333,6 +334,8 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
     tableCells += n;
     if (tableCells > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the tables in the file have more than ${caps.maxCells} cells`);
   };
+  /** A repeated cell shares its text in memory but not in the output, so each extra copy counts. */
+  const chargeRepeatedText = capped(caps.maxTextChars, `repeated table cells hold more than ${caps.maxTextChars} characters of text`);
 
   function tableOf(el: XmlElement): Table | undefined {
     const rows: Block[][][] = [];
@@ -344,6 +347,8 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
           const read: { blocks: Block[]; count: number }[] = [];
           let perRow = 0;
           let charged = 0;
+          let textOnce = 0;
+          let textPerRow = 0;
           for (const c of elementsOf(k)) {
             if (c.name !== "table:table-cell" && c.name !== "table:covered-table-cell") continue;
             if (c.name === "table:covered-table-cell" || c.attrs["table:number-columns-spanned"] || c.attrs["table:number-rows-spanned"]) warnings.add("merged table cells were read as single cells");
@@ -353,10 +358,14 @@ export function readOdt(bytes: Uint8Array, limits?: Partial<Limits>): ReadResult
             const count = repeat(c, "table:number-columns-repeated");
             charged += inner;
             perRow += count * (1 + inner);
+            const chars = textLength(blocks);
+            textOnce += chars;
+            textPerRow += chars * count;
             read.push({ blocks, count });
           }
           const rowRepeat = repeat(k, "table:number-rows-repeated");
           chargeCells(Math.max(perRow, 1) * rowRepeat - charged);
+          chargeRepeatedText(textPerRow * rowRepeat - textOnce);
           const cells = read.flatMap(({ blocks, count }): Block[][] => {
             const empty = blocks.length === 1 && blocks[0].type === "paragraph" && blocks[0].content.length === 0;
             return Array.from({ length: count }, () => (empty ? [] : blocks));

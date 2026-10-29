@@ -20,6 +20,8 @@ export interface Limits {
   maxXmlElements: number;
   /** Number of cells in a workbook, or table cells in a text document. Repeat counts count in full. */
   maxCells: number;
+  /** Characters of text that a file repeats: cells that share one string, or table cells that repeat. Each extra copy counts. */
+  maxTextChars: number;
   /** Length of a style's parent chain. */
   maxStyleDepth: number;
 }
@@ -35,6 +37,7 @@ export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   maxXmlDepth: 100,
   maxXmlElements: 1_000_000,
   maxCells: 1_000_000,
+  maxTextChars: 32 * 1024 * 1024,
   maxStyleDepth: 50,
 });
 
@@ -58,4 +61,13 @@ export class FormatError extends Error {
     super(message);
     this.name = "FormatError";
   }
+}
+
+/** A running total that throws `LIMIT_EXCEEDED` with `message` once it passes `limit`. */
+export function capped(limit: number, message: string): (amount: number) => void {
+  let used = 0;
+  return (amount) => {
+    used += amount;
+    if (used > limit) throw new FormatError("LIMIT_EXCEEDED", message);
+  };
 }

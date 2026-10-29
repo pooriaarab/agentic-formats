@@ -15,6 +15,7 @@
  * 10 LibreOffice cannot open our file, or its re-save does not read back to the same model
  * 11 a table makes billions of cells from a few repeat counts (rows x cells x repeats, over many tables)
  * 12 a style parent chain is long, loops, or names a key of Object.prototype
+ * 13 one big paragraph in a repeated table cell fills the output once for each copy
  */
 import { DOMParser } from "@xmldom/xmldom";
 import { strFromU8, unzipSync } from "fflate";
@@ -234,6 +235,16 @@ describe("hostile files", () => {
     const inner = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="10"><table:table-cell table:number-columns-repeated="10"/></table:table-row></table:table>`;
     const nested = `<table:table ${TABLE_NS}><table:table-row table:number-rows-repeated="10"><table:table-cell table:number-columns-repeated="10">${inner}</table:table-cell></table:table-row></table:table>`;
     limitExceeded(() => readOdt(odt(wrap(nested)), withLimits({ maxCells: 150 })));
+  });
+
+  test("13 a big paragraph in a repeated cell or row counts once for each copy", () => {
+    const caps = withLimits({ maxTextChars: 60_000 });
+    const cell = (attrs: string) => `<table:table-cell ${attrs}><text:p>${"x".repeat(50_000)}</text:p></table:table-cell>`;
+    const row = (cellAttrs: string, rowAttrs = "") => `<table:table ${TABLE_NS}><table:table-row ${rowAttrs}>${cell(cellAttrs)}</table:table-row></table:table>`;
+    expect(readOdt(odt(wrap(row('table:number-columns-repeated="2"'))), caps).model.blocks).toHaveLength(1);
+    limitExceeded(() => readOdt(odt(wrap(row('table:number-columns-repeated="3"'))), caps));
+    limitExceeded(() => readOdt(odt(wrap(row("", 'table:number-rows-repeated="3"'))), caps));
+    limitExceeded(() => readOdt(odt(wrap(row('table:number-columns-repeated="1000"', 'table:number-rows-repeated="1000"'))), caps));
   });
 
   const STYLE_NS = `xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"`;

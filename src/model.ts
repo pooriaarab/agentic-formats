@@ -83,6 +83,21 @@ export interface TextDoc {
 
 const inlineKey = (run: TextRun): string => JSON.stringify([run.marks, run.href]);
 
+const inlineLength = (content: Inline[]): number =>
+  content.reduce((n, node) => n + (node.type === "text" ? node.text.length : node.type === "footnote" ? inlineLength(node.content) : 1), 0);
+
+/** Characters of text in blocks, counted as they are laid out: a row that appears twice counts twice. */
+export function textLength(blocks: Block[]): number {
+  return blocks.reduce((n, block) => {
+    if (block.type === "table") return n + block.rows.reduce((m, row) => m + row.reduce((k, cell) => k + textLength(cell), 0), 0);
+    if (block.type === "list") {
+      const items = (list: List): number => list.items.reduce((m, item) => m + inlineLength(item.content) + (item.sublist ? items(item.sublist) : 0), 0);
+      return n + items(block);
+    }
+    return n + inlineLength(block.content);
+  }, 0);
+}
+
 /** Merge runs that look the same, drop empty ones, and put marks in the canonical order. */
 export function normalizeInline(content: Inline[]): Inline[] {
   const out: Inline[] = [];
