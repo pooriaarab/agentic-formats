@@ -395,3 +395,37 @@ describe("PDF writer", () => {
   });
 });
 const pdftotextOrNull = (bytes: Uint8Array): string | null => (hasPdftotext ? pdftotext(bytes) : null);
+
+describe("PDF writer, review round 4", () => {
+  test("7 a table of empty rows under a wide row is refused fast", () => {
+    const wide = Array.from({ length: 2000 }, () => [] as never[]);
+    const empty: never[][] = [];
+    const started = Date.now();
+    expect(() => writePdf({ blocks: [{ type: "table", rows: [wide, ...Array.from({ length: 1000 }, () => empty)] }] }, { maxCells: 100_000 })).toThrow(FormatError);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("4 a plain PNG with damaged pixels or a bomb in its data is reported", () => {
+    const rebuilt = (idat: Uint8Array) => {
+      const at = PNG.findIndex((_, i) => i > 8 && String.fromCharCode(...PNG.subarray(i, i + 4)) === "IDAT") - 4;
+      const head = PNG.slice(0, at);
+      head[25] = 2;
+      const chunk = new Uint8Array(12 + idat.length);
+      new DataView(chunk.buffer).setUint32(0, idat.length);
+      chunk.set([0x49, 0x44, 0x41, 0x54], 4);
+      chunk.set(idat, 8);
+      return new Uint8Array([...head, ...chunk]);
+    };
+    const doc = (data: Uint8Array) => ({ blocks: [{ type: "paragraph" as const, content: [{ type: "image" as const, data, mime: "image/png" as const }] }] });
+    const damaged = "an image is a PNG with damaged pixels: not written";
+    expect(writePdf(doc(rebuilt(Uint8Array.of(1, 2, 3, 4, 5)))).warnings).toContain(damaged);
+    expect(writePdf(doc(rebuilt(zlibSync(new Uint8Array(32 * 1024 * 1024))))).warnings).toContain(damaged);
+    expect(writePdf(doc(rebuilt(zlibSync(Uint8Array.of(0, 1, 2, 3))))).warnings).toEqual([]);
+  });
+
+  test("5 image descriptions, bold code, and a long title are reported", () => {
+    const r = writePdf({ title: "t".repeat(600), blocks: [{ type: "paragraph", content: [{ type: "text", text: "c", marks: ["code", "bold"] }, { type: "image", data: PNG, mime: "image/png", alt: "dot" }] }] });
+    expect(r.warnings).toEqual(expect.arrayContaining(["image descriptions are not written to a PDF", "bold and italic on code text are written as plain Courier", "the title was cut to 500 characters"]));
+  });
+});
+

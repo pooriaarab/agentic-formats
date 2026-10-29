@@ -193,6 +193,11 @@ class Pdf {
       const unpacked = height * (1 + Math.ceil((width * colors * depth) / 8));
       if (unpacked > this.caps.maxEntryBytes) throw new FormatError("LIMIT_EXCEEDED", "an image is larger than the entry limit when unpacked");
       this.decoded(unpacked);
+      // Unpack it here, bounded, so a damaged or bomb stream is reported and not handed to the viewer.
+      const rows = inflateUpTo(joined, unpacked);
+      const stride = 1 + Math.ceil((width * colors * depth) / 8);
+      if (!rows || rows.length !== unpacked) return skip("is a PNG with damaged pixels");
+      for (let y = 0; y < height; y++) if (rows[y * stride] > 4) return skip("is a PNG with damaged pixels");
       const space = ctype === 3 ? `[/Indexed /DeviceRGB ${Math.floor(palette!.length / 3) - 1} <${[...palette!.subarray(0, Math.floor(palette!.length / 3) * 3)].map((b) => b.toString(16).padStart(2, "0")).join("")}>]` : ctype === 2 ? "/DeviceRGB" : "/DeviceGray";
       this.set(id, `<</Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace ${space} /BitsPerComponent ${depth} /Filter /FlateDecode /DecodeParms <</Predictor 15 /Colors ${colors} /BitsPerComponent ${depth} /Columns ${width}>>>>`, joined);
       return img;
@@ -248,6 +253,7 @@ class Pdf {
     });
     this.set(tree, `<</Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(" ")}] /Count ${pageIds.length}>>`);
     this.set(catalog, `<</Type /Catalog /Pages ${tree} 0 R>>`);
+    if (title && [...title].length > 500) this.warnings.add("the title was cut to 500 characters");
     const titleHex = title ? `/Title <FEFF${[...title].slice(0, 500).map((c) => c.codePointAt(0)!).flatMap((cp) => (cp > 0xffff ? [0xd800 + ((cp - 0x10000) >> 10), 0xdc00 + ((cp - 0x10000) & 0x3ff)] : [cp])).map((u) => u.toString(16).padStart(4, "0")).join("")}> ` : "";
     this.set(info, `<<${titleHex}/Producer (agentic-formats) /CreationDate (D:20000101000000Z)>>`);
 
@@ -363,6 +369,7 @@ function atomsOf(pdf: Pdf, runs: TextRun[], bold: boolean): Atom[] {
     const link = r.href !== undefined ? safeHref(r.href) : undefined;
     const external = link !== undefined && /^(https?:|mailto:)/i.test(link) && /^[\x21-\x7e]+$/.test(link) ? link : undefined;
     if (r.href !== undefined && !external) pdf.warnings.add("a link that is not a web or mail address was written as plain text");
+    if (r.marks?.includes("code") && (r.marks.includes("bold") || r.marks.includes("italic"))) pdf.warnings.add("bold and italic on code text are written as plain Courier");
     if (r.marks?.includes("superscript") || r.marks?.includes("subscript")) pdf.warnings.add("superscript and subscript are written as plain text");
     return { text: r.text === "\n" ? "\n" : pdf.encode(r.text), face: faceOf(r.marks, bold), underline: r.marks?.includes("underline") || !!external, strike: r.marks?.includes("strike"), href: external };
   });
@@ -471,6 +478,7 @@ function writeDeck(deck: Deck, pdf: Pdf): void {
           );
         }
       } else if (shape.type === "picture") {
+        if (shape.alt) pdf.warnings.add("image descriptions are not written to a PDF");
         const img = pdf.image(shape.data);
         if (img) page.ops.push(`q ${num(width)} 0 0 ${num(height)} ${num(x)} ${num(py)} cm /${img.name} Do Q`);
       } else {
@@ -533,6 +541,7 @@ function lineItem(line: Line, size: number, dx: number): Item {
 }
 
 function imageItem(ctx: Ctx, node: Extract<Inline, { type: "image" }>, width: number, dx: number): Item | undefined {
+  if (node.alt) ctx.pdf.warnings.add("image descriptions are not written to a PDF");
   const img = ctx.pdf.image(node.data);
   if (!img) return undefined;
   const [w0, h0] = frameSize(node.width, node.height, sniffImage(node.data)!);
@@ -626,11 +635,11 @@ function tableItems(ctx: Ctx, block: Extract<Block, { type: "table" }>, width: n
     out.push({
       h,
       draw: (page, x, top) => {
-        for (let c = 0; c < cols; c++) {
+        for (let c = 0; c < cells.length; c++) {
           const cx = x + c * colW;
           page.ops.push(`${header ? "0.92 g " : ""}0.5 w 0 0 0 RG ${num(cx)} ${num(PAGE_H - top - h)} ${num(colW)} ${num(h)} re ${header ? "B" : "S"}`);
           let at = top + CELL_PAD;
-          for (const item of cells[c] ?? []) {
+          for (const item of cells[c]) {
             if (at + item.h > top + h) break;
             item.draw(page, cx + CELL_PAD, at);
             at += item.h;
@@ -712,7 +721,11 @@ function checkBlocks(blocks: unknown, caps: Limits, depth: number, cells: { n: n
     else if (block.type === "list") list(block, depth);
     else if (block.type === "table") {
       checkList(block.rows, "the rows of a table");
+      // The table is drawn with a box for each row and column, so the grid counts, not only the cells.
+      const cols = block.rows.reduce((m, r) => (Array.isArray(r) ? Math.max(m, r.length) : m), 0);
+      if (block.rows.length * cols > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the table has more than ${caps.maxCells} cells`);
       for (const row of block.rows) {
+        tick();
         checkList(row, "a table row");
         for (const cell of row) {
           if (++cells.n > caps.maxCells) throw new FormatError("LIMIT_EXCEEDED", `the table has more than ${caps.maxCells} cells`);
