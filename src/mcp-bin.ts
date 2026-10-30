@@ -22,6 +22,7 @@ Flags:
 
 const KNOWN_ARGS = ["--help", "-h", "--version", "-V"];
 const args = process.argv.slice(2);
+if (args[0] === "mcp") args.shift();
 const unknown = args.find((arg) => !KNOWN_ARGS.includes(arg));
 
 if (unknown !== undefined) {

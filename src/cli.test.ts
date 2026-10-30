@@ -58,6 +58,25 @@ describe("built package", () => {
     }
   });
 
+  test("the MCP bin accepts one leading mcp before help and version", () => {
+    const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
+    for (const flag of ["--help", "--version"]) {
+      const direct = spawnSync("node", [bin, flag], { encoding: "utf8", timeout: 5000 });
+      const prefixed = spawnSync("node", [bin, "mcp", flag], { encoding: "utf8", timeout: 5000 });
+      for (const result of [direct, prefixed]) {
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.stderr).toBe("");
+      }
+      expect(prefixed.stdout).toBe(direct.stdout);
+    }
+    for (const args of [["mcp", "mcp", "--help"], ["--help", "mcp"]]) {
+      const bad = spawnSync("node", [bin, ...args], { encoding: "utf8", timeout: 5000 });
+      expect(bad.status).toBe(2);
+      expect(bad.stdout).toBe("");
+    }
+  });
+
   test("the MCP bin reports a bad environment in one line, not a stack trace, and refuses an unknown flag", () => {
     const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
     const bad = spawnSync("node", [bin], { encoding: "utf8", timeout: 5000, env: { ...process.env, AGENTIC_FORMATS_ROOT: "" } });
