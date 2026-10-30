@@ -12,7 +12,7 @@ Read and write open office files: ODF and OOXML for documents, spreadsheets, and
 > `AGENTIC_FORMATS_ROOT`. To allow any path, set `AGENTIC_FORMATS_UNSAFE_ANY_PATH=1`. An empty
 > variable is an error.
 
-> Status: 0.4.3. The neutral models, the input guards, all six formats (ODT, DOCX, ODS, XLSX, ODP,
+> Status: 0.4.4. The neutral models, the input guards, all six formats (ODT, DOCX, ODS, XLSX, ODP,
 > PPTX), the CLI, and the MCP server work. A replaced file is written atomically.
 > See [CHANGELOG.md](CHANGELOG.md).
 
@@ -34,7 +34,8 @@ The first line needs a `report.odt` in the current folder. Use any ODT file you 
 from a Word file, run `npx agentic-formats convert draft.docx report.odt`. The second line reads
 the `report.docx` that the first line writes. `mcp` starts the MCP server. It prints one line on
 stderr and then waits for a client on stdin. To see the server's options, run
-`npx -p agentic-formats agentic-formats-mcp --help`.
+`npx -p agentic-formats agentic-formats-mcp --help`. The `agentic-formats-mcp` binary also accepts
+a leading `mcp` argument.
 
 `convert` picks the formats from the file extensions and prints JSON: the files, the sizes, and
 `warnings` (each one names content that was lost). It refuses to replace a file unless you pass

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+
+- The MCP binary accepts one leading `mcp` argument. Help and version flags give the same output with or without it.
+
 ## 0.4.3
 
 - SKILL.md names the exit code for each command-line case, as the CLI does. An unknown command, a flag or argument that the command does not take, and a wrong number of paths to `convert` or `inspect` exit 2. Any other refusal exits 1, such as an unknown file extension. The npm package does not ship SKILL.md, so this text is in the repository, not in the package.
