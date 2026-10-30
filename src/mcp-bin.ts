@@ -4,9 +4,9 @@ import { startMcpFromEnv } from "./mcp.js";
 import { VERSION } from "./version.js";
 
 const HELP = `agentic-formats-mcp ${VERSION}
-MCP server for agentic-formats. It serves the tools on stdio and starts with no arguments.
+MCP server for agentic-formats. It serves the tools on stdio.
 
-Usage: agentic-formats-mcp [--help | --version]
+Usage: agentic-formats-mcp [mcp] [--help | --version]
 
 Environment:
   AGENTIC_FORMATS_ROOT             Limit every path to this folder instead of the working folder.

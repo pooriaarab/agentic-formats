@@ -60,7 +60,7 @@ describe("built package", () => {
 
   test("the MCP bin accepts one leading mcp before help and version", () => {
     const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
-    for (const flag of ["--help", "--version"]) {
+    for (const flag of ["--help", "-h", "--version", "-V"]) {
       const direct = spawnSync("node", [bin, flag], { encoding: "utf8", timeout: 5000 });
       const prefixed = spawnSync("node", [bin, "mcp", flag], { encoding: "utf8", timeout: 5000 });
       for (const result of [direct, prefixed]) {
@@ -74,6 +74,7 @@ describe("built package", () => {
       const bad = spawnSync("node", [bin, ...args], { encoding: "utf8", timeout: 5000 });
       expect(bad.status).toBe(2);
       expect(bad.stdout).toBe("");
+      expect(bad.stderr).toContain('unknown argument "mcp"');
     }
   });
 
@@ -94,12 +95,15 @@ describe("built package", () => {
   });
 
   test("the MCP server starts over stdio", async () => {
-    const client = new Client({ name: "probe", version: "0.0.0" });
-    await client.connect(new StdioClientTransport({ command: "node", args: [cli, "mcp"] }));
-    try {
-      expect(client.getServerVersion()).toMatchObject({ name: "agentic-formats", version });
-    } finally {
-      await client.close();
+    const bin = new URL("../dist/mcp-bin.js", import.meta.url).pathname;
+    for (const args of [[cli, "mcp"], [bin, "mcp"]]) {
+      const client = new Client({ name: "probe", version: "0.0.0" });
+      await client.connect(new StdioClientTransport({ command: "node", args }));
+      try {
+        expect(client.getServerVersion()).toMatchObject({ name: "agentic-formats", version });
+      } finally {
+        await client.close();
+      }
     }
   });
 

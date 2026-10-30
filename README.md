@@ -34,7 +34,8 @@ The first line needs a `report.odt` in the current folder. Use any ODT file you 
 from a Word file, run `npx agentic-formats convert draft.docx report.odt`. The second line reads
 the `report.docx` that the first line writes. `mcp` starts the MCP server. It prints one line on
 stderr and then waits for a client on stdin. To see the server's options, run
-`npx -p agentic-formats agentic-formats-mcp --help`.
+`npx -p agentic-formats agentic-formats-mcp --help`. The `agentic-formats-mcp` binary also accepts
+a leading `mcp` argument.
 
 `convert` picks the formats from the file extensions and prints JSON: the files, the sizes, and
 `warnings` (each one names content that was lost). It refuses to replace a file unless you pass
